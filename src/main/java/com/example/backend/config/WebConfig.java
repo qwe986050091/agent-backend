@@ -20,9 +20,14 @@ public class WebConfig implements WebMvcConfigurer {
 
     @Override
     public void addCorsMappings(CorsRegistry registry) {
-        // 前端 Vite 默认地址；生产环境按需收紧
+        // 允许本地开发地址与生产域名访问 /api
+        // 注意：Spring 对不在白名单内的 Origin 直接返回 403，生产域名必须加进来
         registry.addMapping("/api/**")
-                .allowedOrigins("http://localhost:5173", "http://127.0.0.1:5173")
+                .allowedOrigins(
+                        "http://localhost:5173",
+                        "http://127.0.0.1:5173",
+                        "http://zlfshop.xyz",
+                        "https://zlfshop.xyz")
                 .allowedMethods("GET", "POST", "PUT", "DELETE", "OPTIONS")
                 .allowedHeaders("*")
                 .allowCredentials(true);
