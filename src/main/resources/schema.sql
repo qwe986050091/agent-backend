@@ -1,0 +1,55 @@
+-- ============================================================
+-- Agent 对话网页 建表语句（MySQL 8.x，utf8mb4）
+-- 应用启动时自动执行（幂等：CREATE TABLE IF NOT EXISTS）
+-- 也可手动执行：mysql -uroot -p agent_chat < schema.sql
+-- ============================================================
+
+-- 用户表
+CREATE TABLE IF NOT EXISTS app_user (
+    id            BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键',
+    username      VARCHAR(50)  NOT NULL COMMENT '登录用户名',
+    password_hash VARCHAR(100) NOT NULL COMMENT 'BCrypt 密码哈希',
+    nickname      VARCHAR(50)           DEFAULT NULL COMMENT '昵称',
+    token         VARCHAR(64)           DEFAULT NULL COMMENT '登录令牌（登录下发，登出清空）',
+    created_at    DATETIME              DEFAULT NULL COMMENT '注册时间',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_user_username (username),
+    UNIQUE KEY uk_user_token (token)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='用户表';
+
+-- Skill 元数据表（平台所有技能：内置 + 用户上传）
+CREATE TABLE IF NOT EXISTS skill (
+    id                  BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键',
+    name                VARCHAR(100) NOT NULL COMMENT '技能唯一标识',
+    short_description   VARCHAR(200)          DEFAULT NULL COMMENT '短描述',
+    detailed_description TEXT                 DEFAULT NULL COMMENT '详细描述',
+    system_prompt       TEXT                  DEFAULT NULL COMMENT '系统提示词片段',
+    tool_names_json     VARCHAR(500)          DEFAULT '[]' COMMENT '引用的内置 Tool 名称 JSON 数组',
+    builtin             TINYINT(1)   NOT NULL DEFAULT 0 COMMENT '是否内置技能（1 内置不可删）',
+    created_by          VARCHAR(100)          DEFAULT NULL COMMENT '上传者用户名（内置为 system）',
+    created_at          DATETIME              DEFAULT NULL COMMENT '创建时间',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_skill_name (name)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='Skill 元数据表';
+
+-- 用户-Skill 挂载关系表
+CREATE TABLE IF NOT EXISTS user_skill (
+    id         BIGINT      NOT NULL AUTO_INCREMENT COMMENT '主键',
+    user_id    VARCHAR(100) NOT NULL COMMENT '挂载用户（用户名）',
+    skill_name VARCHAR(100) NOT NULL COMMENT '被挂载的 Skill 名称',
+    mounted_at DATETIME              DEFAULT NULL COMMENT '挂载时间',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_user_skill (user_id, skill_name),
+    KEY idx_user_skill_user (user_id)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='用户-Skill 挂载关系表';
+
+-- 对话消息记录表
+CREATE TABLE IF NOT EXISTS chat_message (
+    id         BIGINT      NOT NULL AUTO_INCREMENT COMMENT '主键',
+    user_id    VARCHAR(100) NOT NULL COMMENT '所属用户（用户名）',
+    role       VARCHAR(20)  NOT NULL COMMENT '角色：user / assistant',
+    content    TEXT         NOT NULL COMMENT '消息内容',
+    created_at DATETIME              DEFAULT NULL COMMENT '发送时间',
+    PRIMARY KEY (id),
+    KEY idx_chat_user_time (user_id, created_at)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='对话消息记录表';

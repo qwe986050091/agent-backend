@@ -1,0 +1,52 @@
+server:
+  port: 8081
+
+spring:
+  application:
+    name: agent-backend
+
+  # ===== MySQL 数据源 =====
+  datasource:
+    # createDatabaseIfNotExist=true：库不存在时自动创建 agent_chat（表结构由 schema.sql 创建）
+    url: jdbc:mysql://localhost:3306/agent_chat?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true&createDatabaseIfNotExist=true
+    username: ${MYSQL_USER:root}
+    password: ${MYSQL_PASSWORD:}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+
+  # ===== 建表脚本自动执行（幂等，CREATE TABLE IF NOT EXISTS） =====
+  sql:
+    init:
+      mode: always
+      schema-locations: classpath:schema.sql
+
+  # ===== JPA / Hibernate（表结构由 schema.sql 管理，Hibernate 只做映射） =====
+  jpa:
+    hibernate:
+      ddl-auto: none
+    open-in-view: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.MySQLDialect
+    show-sql: false
+
+  # Skill 文件上传大小限制
+  servlet:
+    multipart:
+      max-file-size: 5MB
+      max-request-size: 5MB
+
+# ===== Agent 服务（d:\code\agent 工程，LangChain4j） =====
+agent:
+  service:
+    base-url: ${AGENT_BASE_URL:http://localhost:8080}
+    connect-timeout: 5s
+    read-timeout: 120s
+
+# ===== 日志配置 =====
+logging:
+  level:
+    com.example: INFO
+    org.springframework: WARN
+    org.hibernate.SQL: WARN
+  pattern:
+    console: "%d{HH:mm:ss} %-5level %logger{36} - %msg%n"
