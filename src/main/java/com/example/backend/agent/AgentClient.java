@@ -9,11 +9,19 @@ import org.springframework.http.MediaType;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Consumer;
 
 /**
  * Agent 服务 HTTP 客户端
@@ -57,6 +65,63 @@ public class AgentClient {
                 .body(Map.class);
         Object answer = resp == null ? null : resp.get("answer");
         return answer == null ? "" : answer.toString();
+    }
+
+    /**
+     * 流式对话：把 agent 的 SSE 逐 token 转发给前端 emitter。
+     *
+     * 阻塞方法，需在工作线程中调用（控制器返回 SseEmitter 后异步执行）。
+     *
+     * @param onComplete 流正常结束后回调，参数为完整回复文本（用于落库）
+     */
+    public void chatStream(String userId, String message, SseEmitter emitter, Consumer<String> onComplete) {
+        StringBuilder fullAnswer = new StringBuilder();
+        try {
+            restClient.post()
+                    .uri("/api/agent/chat/stream")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body(Map.of("userId", userId, "message", message))
+                    .exchange((request, response) -> {
+                        if (response.getStatusCode().isError()) {
+                            throw new IllegalStateException("Agent 流式接口返回错误状态: " + response.getStatusCode());
+                        }
+                        // 逐行解析 agent 返回的 SSE：空行分隔事件，data: 行为数据
+                        try (BufferedReader reader = new BufferedReader(
+                                new InputStreamReader(response.getBody(), StandardCharsets.UTF_8))) {
+                            List<String> dataLines = new ArrayList<>();
+                            String line;
+                            while ((line = reader.readLine()) != null) {
+                                if (line.isEmpty()) {
+                                    if (!dataLines.isEmpty()) {
+                                        String data = String.join("\n", dataLines);
+                                        dataLines.clear();
+                                        if ("[DONE]".equals(data)) {
+                                            continue;
+                                        }
+                                        fullAnswer.append(data);
+                                        try {
+                                            emitter.send(SseEmitter.event().data(data));
+                                        } catch (IOException e) {
+                                            // 前端已断开，终止读取
+                                            throw new RuntimeException("前端连接已断开", e);
+                                        }
+                                    }
+                                    continue;
+                                }
+                                if (line.startsWith("data:")) {
+                                    dataLines.add(line.substring(5).stripLeading());
+                                }
+                            }
+                        }
+                        return null;
+                    });
+
+            onComplete.accept(fullAnswer.toString());
+            emitter.complete();
+        } catch (Exception e) {
+            log.warn("[AgentClient] 流式对话失败: {}", e.getMessage());
+            emitter.completeWithError(e);
+        }
     }
 
     /** 获取 agent 侧已注册的全部 Skill 名称 */

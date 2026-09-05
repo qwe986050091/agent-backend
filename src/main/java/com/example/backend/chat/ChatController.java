@@ -4,6 +4,7 @@ import com.example.backend.agent.AgentClient;
 import com.example.backend.auth.AuthInterceptor;
 import com.example.backend.user.UserEntity;
 import jakarta.servlet.http.HttpServletRequest;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -11,20 +12,31 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /**
  * 对话接口（需登录）
  *
- *   POST /api/chat          发送消息（HTTP 转发给 agent 工程），对话记录落库
+ *   POST /api/chat          发送消息（同步，HTTP 转发给 agent 工程），对话记录落库
+ *   POST /api/chat/stream   流式对话（SSE 逐 token），完成后落库
  *   GET  /api/chat/history  当前用户的历史消息
  */
 @RestController
 @RequestMapping("/api/chat")
 public class ChatController {
+
+    /** SSE 流式对话的工作线程池（HTTP 转发为阻塞调用） */
+    private final ExecutorService streamExecutor = Executors.newCachedThreadPool(r -> {
+        Thread t = new Thread(r, "chat-sse-stream");
+        t.setDaemon(true);
+        return t;
+    });
 
     private final AgentClient agentClient;
     private final ChatMessageRepository chatMessageRepository;
@@ -60,6 +72,34 @@ public class ChatController {
         saveMessage(user.getUsername(), "assistant", answer);
 
         return ResponseEntity.ok(Map.of("answer", answer));
+    }
+
+    /**
+     * 流式对话（SSE）：逐 token 转发给前端，流结束后把完整回复落库
+     */
+    @PostMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public SseEmitter chatStream(HttpServletRequest request, @RequestBody Map<String, String> body) {
+        UserEntity user = (UserEntity) request.getAttribute(AuthInterceptor.CURRENT_USER_ATTR);
+        String message = body == null ? null : body.get("message");
+
+        // 不超时（0），长回复可能持续较久
+        SseEmitter emitter = new SseEmitter(0L);
+
+        if (message == null || message.trim().isEmpty()) {
+            emitter.completeWithError(new IllegalArgumentException("消息内容不能为空"));
+            return emitter;
+        }
+
+        String userId = user.getUsername();
+        // 用户消息先落库
+        saveMessage(userId, "user", message);
+
+        streamExecutor.execute(() -> agentClient.chatStream(
+                userId, message, emitter,
+                // 流正常结束：完整回复落库
+                fullAnswer -> saveMessage(userId, "assistant", fullAnswer)));
+
+        return emitter;
     }
 
     @GetMapping("/history")
