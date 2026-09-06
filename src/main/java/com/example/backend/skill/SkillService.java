@@ -15,11 +15,11 @@ import java.util.Set;
  * Skill 业务服务
  *
  * 职责：
- *   1. Skill 元数据、用户挂载关系的 MySQL 持久化（本服务是数据权威）
- *   2. 所有变更通过 HTTP 同步给 agent 工程（agent 侧内存态供对话时使用）
+ *   1. Skill 元数据、用户挂载关系的 MySQL 持久化（<b>本服务是唯一数据权威</b>）
+ *   2. 对话时由 ChatController 读取挂载关系与技能定义，随 payload 下发给无状态的 agent
  *
- * 约定操作顺序：先调 agent（外部内存态，失败直接报错），成功后落库。
- * agent 重启导致内存丢失的情况，由 SkillSyncService 在 backend 启动/就绪时补偿同步。
+ * 无状态化说明：技能上传/挂载/卸载/删除<b>不再</b>同步调用 agent —— agent 不保存技能状态，
+ * 每次对话请求实时携带生效的技能定义，因此 agent 重启/多实例都无需补偿同步。
  */
 @Service
 public class SkillService {
@@ -59,7 +59,7 @@ public class SkillService {
     }
 
     /**
-     * 上传/更新 Skill：转发给 agent 注册，成功后落库
+     * 上传/更新 Skill：直接落库（MySQL 为权威，对话时随 payload 下发给 agent）
      */
     @Transactional
     public SkillEntity upload(SkillUploadRequest req, String uploader) {
@@ -73,15 +73,6 @@ public class SkillService {
             throw new IllegalArgumentException("内置 Skill 名称不可覆盖: " + name);
         }
 
-        // 1. 转发给 agent（字段与 agent 的 SkillDefinition 完全一致，直接序列化）
-        try {
-            String json = objectMapper.writeValueAsString(req);
-            agentClient.uploadSkill(json);
-        } catch (Exception e) {
-            throw new IllegalStateException("Agent 服务注册 Skill 失败: " + rootMessage(e), e);
-        }
-
-        // 2. 落库
         SkillEntity entity = existing != null ? existing : new SkillEntity();
         entity.setName(name);
         entity.setShortDescription(req.shortDescription());
@@ -97,20 +88,15 @@ public class SkillService {
         entity.setCreatedBy(uploader);
         skillRepository.save(entity);
 
-        log.info("[SkillService] 用户 {} 上传 Skill: {}", uploader, name);
+        log.info("[SkillService] 用户 {} 上传/更新 Skill: {}", uploader, name);
         return entity;
     }
 
-    /** 挂载：先同步 agent，再落库 */
+    /** 挂载：落库即可（下次对话请求自动携带） */
     @Transactional
     public boolean mount(String userId, String skillName) {
         if (skillRepository.findByName(skillName).isEmpty()) {
             return false;
-        }
-        try {
-            agentClient.mount(userId, skillName);
-        } catch (Exception e) {
-            throw new IllegalStateException("Agent 服务挂载失败: " + rootMessage(e), e);
         }
         if (!userSkillRepository.existsByUserIdAndSkillName(userId, skillName)) {
             UserSkillEntity mount = new UserSkillEntity();
@@ -121,32 +107,22 @@ public class SkillService {
         return true;
     }
 
-    /** 卸载 */
+    /** 卸载：删除挂载关系 */
     @Transactional
     public boolean unmount(String userId, String skillName) {
         boolean existed = userSkillRepository.existsByUserIdAndSkillName(userId, skillName);
-        try {
-            agentClient.unmount(userId, skillName);
-        } catch (Exception e) {
-            log.warn("[SkillService] agent 卸载失败（继续清理本地关系）: {}", rootMessage(e));
-        }
         if (existed) {
             userSkillRepository.deleteByUserIdAndSkillName(userId, skillName);
         }
         return existed;
     }
 
-    /** 删除自定义 Skill：注销 agent + 清理挂载关系 + 删元数据 */
+    /** 删除自定义 Skill：清理挂载关系 + 删元数据 */
     @Transactional
     public boolean delete(String skillName) {
         SkillEntity entity = skillRepository.findByName(skillName).orElse(null);
         if (entity == null || entity.isBuiltin()) {
             return false;
-        }
-        try {
-            agentClient.unregister(skillName);
-        } catch (Exception e) {
-            log.warn("[SkillService] agent 注销失败（继续清理本地数据）: {}", rootMessage(e));
         }
         userSkillRepository.deleteBySkillName(skillName);
         skillRepository.delete(entity);

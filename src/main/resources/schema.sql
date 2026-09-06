@@ -67,3 +67,12 @@ CREATE TABLE IF NOT EXISTS knowledge_document (
     UNIQUE KEY uk_knowledge_doc_id (doc_id),
     KEY idx_knowledge_user (username)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='RAG 知识文档元数据表';
+
+-- Agent 对话记忆摘要表（agent 无状态化：摘要由 agent 侧 LLM 压缩生成，backend 持久化，
+-- 每次对话请求随 payload 回传给 agent 重建记忆；agent 重启/多实例不丢上下文）
+CREATE TABLE IF NOT EXISTS agent_memory (
+    user_id    VARCHAR(100) NOT NULL COMMENT '所属用户（用户名）',
+    summary    TEXT                  DEFAULT NULL COMMENT '会话历史摘要纯文本',
+    updated_at DATETIME              DEFAULT NULL COMMENT '最近更新时间',
+    PRIMARY KEY (user_id)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='Agent 对话记忆摘要表';
