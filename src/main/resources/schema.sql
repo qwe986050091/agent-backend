@@ -53,3 +53,17 @@ CREATE TABLE IF NOT EXISTS chat_message (
     PRIMARY KEY (id),
     KEY idx_chat_user_time (user_id, created_at)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='对话消息记录表';
+
+-- RAG 知识文档表（用户上传的文档元数据；文本内容切块后存入 agent 侧向量库）
+CREATE TABLE IF NOT EXISTS knowledge_document (
+    id          BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键',
+    username    VARCHAR(100) NOT NULL COMMENT '上传用户（用户名）',
+    doc_id      VARCHAR(64)  NOT NULL COMMENT '文档唯一标识（UUID，对应向量库 docId）',
+    doc_name    VARCHAR(255) NOT NULL COMMENT '原始文件名',
+    doc_type    VARCHAR(20)  NOT NULL COMMENT '文件类型（txt/md/text）',
+    chunk_count INT          NOT NULL DEFAULT 0 COMMENT '切块（向量片段）数量',
+    created_at  DATETIME              DEFAULT NULL COMMENT '上传时间',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_knowledge_doc_id (doc_id),
+    KEY idx_knowledge_user (username)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='RAG 知识文档元数据表';

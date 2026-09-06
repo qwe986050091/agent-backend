@@ -35,8 +35,8 @@ public class WebConfig implements WebMvcConfigurer {
 
     @Override
     public void addInterceptors(InterceptorRegistry registry) {
-        // 对话与 Skill 管理接口必须登录；/api/auth/** 与 /api/health 放行
+        // 对话、Skill 管理、知识库接口必须登录；/api/auth/** 与 /api/health 放行
         registry.addInterceptor(authInterceptor)
-                .addPathPatterns("/api/chat/**", "/api/skills/**");
+                .addPathPatterns("/api/chat/**", "/api/skills/**", "/api/knowledge/**");
     }
 }

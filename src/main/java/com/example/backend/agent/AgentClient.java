@@ -215,4 +215,39 @@ public class AgentClient {
             return false;
         }
     }
+
+    // ==================== RAG 索引 ====================
+
+    /**
+     * 索引一篇文档到 agent 侧向量库（切块 + 本地 embedding）。
+     *
+     * @return 切块数量
+     */
+    public int indexDocument(String userId, String docId, String name, String text) {
+        Map<String, Object> resp = restClient.post()
+                .uri("/api/agent/rag/index-document")
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(Map.of(
+                        "userId", userId,
+                        "docId", docId,
+                        "name", name == null ? "" : name,
+                        "text", text == null ? "" : text))
+                .retrieve()
+                .body(Map.class);
+        Object chunks = resp == null ? null : resp.get("chunks");
+        return chunks instanceof Number n ? n.intValue() : 0;
+    }
+
+    /** 索引一条对话消息到 agent 侧向量库（跨会话长期记忆） */
+    public void indexConversation(String userId, String role, String content) {
+        restClient.post()
+                .uri("/api/agent/rag/index-conversation")
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(Map.of(
+                        "userId", userId,
+                        "role", role,
+                        "content", content == null ? "" : content))
+                .retrieve()
+                .toBodilessEntity();
+    }
 }

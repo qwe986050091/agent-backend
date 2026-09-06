@@ -14,6 +14,9 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -31,7 +34,9 @@ import java.util.concurrent.Executors;
 @RequestMapping("/api/chat")
 public class ChatController {
 
-    /** SSE 流式对话的工作线程池（HTTP 转发为阻塞调用） */
+    private static final Logger log = LoggerFactory.getLogger(ChatController.class);
+
+    /** SSE 流式对话 / RAG 异步索引的工作线程池（HTTP 转发为阻塞调用） */
     private final ExecutorService streamExecutor = Executors.newCachedThreadPool(r -> {
         Thread t = new Thread(r, "chat-sse-stream");
         t.setDaemon(true);
@@ -125,5 +130,19 @@ public class ChatController {
         entity.setRole(role);
         entity.setContent(content);
         chatMessageRepository.save(entity);
+
+        // 异步写入 RAG 长期记忆（向量索引）；失败只记日志，不影响聊天主流程
+        indexConversationAsync(userId, role, content);
+    }
+
+    /** 异步把一条对话索引到 agent 侧向量库（RAG 长期记忆），异常不抛出 */
+    private void indexConversationAsync(String userId, String role, String content) {
+        streamExecutor.execute(() -> {
+            try {
+                agentClient.indexConversation(userId, role, content);
+            } catch (Exception e) {
+                log.warn("[Chat] 对话 RAG 索引失败（不影响聊天）: {}", e.getMessage());
+            }
+        });
     }
 }
