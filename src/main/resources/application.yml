@@ -41,6 +41,19 @@ agent:
     base-url: ${AGENT_BASE_URL:http://localhost:8080}
     connect-timeout: 5s
     read-timeout: 120s
+    # JDK HttpClient 连接池响应处理线程数
+    http-pool-threads: 8
+  # ===== 调用 agent 的韧性策略（Resilience4j） =====
+  resilience:
+    circuit-breaker:
+      failure-rate-threshold: 50      # 窗口内失败率 ≥50% → 熔断 OPEN
+      sliding-window-size: 20         # 计数滑动窗口（最近 20 次调用）
+      minimum-number-of-calls: 5      # 至少 5 次调用才开始计算失败率
+      wait-in-open: 30s               # OPEN 30s 后进入 HALF_OPEN 探测
+      permitted-calls-in-half-open: 3 # HALF_OPEN 放行 3 次探测
+    retry:
+      max-attempts: 2                 # 最多尝试 2 次（即 1 次重试），仅连接失败/读超时/5xx
+      wait-duration: 1s
 
 # ===== 日志配置 =====
 logging:

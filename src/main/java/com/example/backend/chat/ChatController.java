@@ -8,9 +8,11 @@ import com.example.backend.skill.UserSkillEntity;
 import com.example.backend.skill.UserSkillRepository;
 import com.example.backend.user.UserEntity;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import jakarta.annotation.PreDestroy;
 import jakarta.servlet.http.HttpServletRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.transaction.annotation.Transactional;
@@ -27,8 +29,12 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * 对话接口（需登录）
@@ -50,12 +56,29 @@ public class ChatController {
     /** 下发给 agent 重建记忆的最近历史消息条数（agent 侧压缩阈值 40 / 保留 20） */
     private static final int HISTORY_LIMIT = 30;
 
-    /** SSE 流式对话 / RAG 异步索引的工作线程池（HTTP 转发为阻塞调用） */
-    private final ExecutorService streamExecutor = Executors.newCachedThreadPool(r -> {
-        Thread t = new Thread(r, "chat-sse-stream");
-        t.setDaemon(true);
-        return t;
-    });
+    /** SSE 单次对话最长时间（5 分钟），超时主动结束，避免连接/线程被无限占用 */
+    private static final long SSE_TIMEOUT_MS = 5 * 60 * 1000L;
+
+    /**
+     * SSE 流式对话 / RAG 异步索引的工作线程池（HTTP 转发为阻塞调用）。
+     * 有界：core 8 / max 32 / 队列 200，满载后 AbortPolicy 拒绝（返回 503，快速失败而非无限堆积线程）。
+     */
+    private final ThreadPoolExecutor streamExecutor = new ThreadPoolExecutor(
+            8, 32, 60L, TimeUnit.SECONDS,
+            new LinkedBlockingQueue<>(200),
+            r -> {
+                Thread t = new Thread(r, "chat-sse-stream-" + THREAD_SEQ.incrementAndGet());
+                t.setDaemon(true);
+                return t;
+            },
+            new ThreadPoolExecutor.AbortPolicy());
+
+    private static final AtomicInteger THREAD_SEQ = new AtomicInteger();
+
+    @PreDestroy
+    void shutdownExecutor() {
+        streamExecutor.shutdown();
+    }
 
     private final AgentClient agentClient;
     private final ChatMessageRepository chatMessageRepository;
@@ -97,12 +120,15 @@ public class ChatController {
         // 2. 保存用户消息
         saveMessage(userId, "user", message);
 
-        // 3. HTTP 调用 agent 工程
+        // 3. HTTP 调用 agent 工程（含重试/熔断；失败或熔断中返回 503 友好降级）
         AgentClient.AgentChatResult result;
         try {
             result = agentClient.chat(payload);
         } catch (Exception e) {
-            throw new IllegalStateException("Agent 服务调用失败，请确认 agent 工程已启动: " + e.getMessage(), e);
+            log.warn("[Chat] agent 调用失败，返回降级响应: {}", e.getMessage());
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                    .body(Map.of("code", "AGENT_UNAVAILABLE",
+                            "message", "AI 服务暂时不可用（" + e.getMessage() + "），请稍后重试"));
         }
 
         // 4. 保存助手回复 + 回写最新摘要
@@ -120,8 +146,12 @@ public class ChatController {
         UserEntity user = (UserEntity) request.getAttribute(AuthInterceptor.CURRENT_USER_ATTR);
         String message = body == null ? null : body.get("message");
 
-        // 不超时（0），长回复可能持续较久
-        SseEmitter emitter = new SseEmitter(0L);
+        // 5 分钟超时：超长回复/僵死连接不会无限占用线程与连接
+        SseEmitter emitter = new SseEmitter(SSE_TIMEOUT_MS);
+        emitter.onTimeout(() -> {
+            log.warn("[Chat] SSE 超过 {}ms 未完成，主动断开", SSE_TIMEOUT_MS);
+            emitter.completeWithError(new TimeoutException("响应超时，请重试"));
+        });
 
         if (message == null || message.trim().isEmpty()) {
             emitter.completeWithError(new IllegalArgumentException("消息内容不能为空"));
@@ -136,13 +166,19 @@ public class ChatController {
         // 2. 用户消息先落库
         saveMessage(userId, "user", message);
 
-        streamExecutor.execute(() -> agentClient.chatStream(
-                payload, emitter,
-                // 流正常结束：完整回复 + 最新摘要落库
-                (fullAnswer, summary) -> {
-                    saveMessage(userId, "assistant", fullAnswer);
-                    saveSummary(userId, summary);
-                }));
+        try {
+            streamExecutor.execute(() -> agentClient.chatStream(
+                    payload, emitter,
+                    // 流正常结束：完整回复 + 最新摘要落库
+                    (fullAnswer, summary) -> {
+                        saveMessage(userId, "assistant", fullAnswer);
+                        saveSummary(userId, summary);
+                    }));
+        } catch (RejectedExecutionException e) {
+            // 线程池/队列已满：快速失败，不排队堆积
+            log.warn("[Chat] 流式线程池已满，拒绝请求");
+            emitter.completeWithError(new IllegalStateException("当前对话繁忙，请稍后重试"));
+        }
 
         return emitter;
     }
