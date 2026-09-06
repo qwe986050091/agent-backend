@@ -32,7 +32,8 @@ import java.util.UUID;
  *   GET    /api/knowledge/documents       当前用户的文档列表
  *   DELETE /api/knowledge/documents/{id}  删除文档元数据
  *
- * 说明：文档全文不落 MySQL，只存元数据；文本切块后存入 agent 侧内存向量库供 RAG 检索。
+ * 说明：文档全文不落 MySQL，只存元数据；文本切块后存入 agent 侧向量库供 RAG 检索
+ * （agent 侧向量库会快照到磁盘文件，服务重启后自动恢复，无需重新上传）。
  */
 @RestController
 @RequestMapping("/api/knowledge")
@@ -136,7 +137,13 @@ public class KnowledgeController {
                         .body(error("FORBIDDEN", "无权删除他人文档"));
             }
             repository.delete(doc);
-            // 注意：内存向量库中的片段当前不支持按 docId 删除（重启后自动清空）
+            // 同步删除 agent 侧向量片段（best-effort：agent 不可用时只记日志，
+            // 不影响元数据删除；极端情况下残留向量需重新上传/删除一次或重启清理）
+            try {
+                agentClient.removeDocument(doc.getDocId());
+            } catch (Exception e) {
+                log.warn("[Knowledge] 删除文档《{}》的 agent 向量失败: {}", doc.getDocName(), e.getMessage());
+            }
             return ResponseEntity.ok(Map.of("deleted", id));
         }).orElse(ResponseEntity.status(HttpStatus.NOT_FOUND)
                 .body(error("NOT_FOUND", "文档不存在")));

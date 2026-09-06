@@ -250,4 +250,14 @@ public class AgentClient {
                 .retrieve()
                 .toBodilessEntity();
     }
+
+    /** 删除 agent 侧某文档的全部向量片段（删知识库文档时 best-effort 调用） */
+    public void removeDocument(String docId) {
+        restClient.post()
+                .uri("/api/agent/rag/remove-document")
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(Map.of("docId", docId == null ? "" : docId))
+                .retrieve()
+                .toBodilessEntity();
+    }
 }
