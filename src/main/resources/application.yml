@@ -9,6 +9,9 @@ spring:
   datasource:
     # createDatabaseIfNotExist=true：库不存在时自动创建 agent_chat（表结构由 schema.sql 创建）
     url: jdbc:mysql://localhost:3306/agent_chat?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true&createDatabaseIfNotExist=true
+    # 用户名/密码必须由环境变量注入（生产 systemd unit 的 Environment=MYSQL_USER/MYSQL_PASSWORD）；
+    # 本地：PowerShell $env:MYSQL_PASSWORD="..." 或 IDE 运行配置；密码不再保留明文默认值，
+    # 未配置时 Hikari 启动即连接失败（fail-fast）
     username: ${MYSQL_USER:root}
     password: ${MYSQL_PASSWORD:}
     driver-class-name: com.mysql.cj.jdbc.Driver
@@ -43,6 +46,8 @@ agent:
     read-timeout: 120s
     # JDK HttpClient 连接池响应处理线程数
     http-pool-threads: 8
+    # 服务间鉴权 token（请求头 X-Agent-Token），生产由环境变量 AGENT_INTERNAL_TOKEN 注入，须与 agent 侧一致
+    internal-token: ${AGENT_INTERNAL_TOKEN:dev-internal-token}
   # ===== 调用 agent 的韧性策略（Resilience4j） =====
   resilience:
     circuit-breaker:

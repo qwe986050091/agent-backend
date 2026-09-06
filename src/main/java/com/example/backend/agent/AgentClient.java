@@ -63,6 +63,7 @@ public class AgentClient {
                        @Value("${agent.service.connect-timeout:5s}") Duration connectTimeout,
                        @Value("${agent.service.read-timeout:120s}") Duration readTimeout,
                        @Value("${agent.service.http-pool-threads:8}") int poolThreads,
+                       @Value("${agent.service.internal-token:dev-internal-token}") String internalToken,
                        CircuitBreaker agentCircuitBreaker,
                        Retry agentRetry) {
         this.circuitBreaker = agentCircuitBreaker;
@@ -84,8 +85,13 @@ public class AgentClient {
         this.restClient = RestClient.builder()
                 .baseUrl(baseUrl)
                 .requestFactory(requestFactory)
+                // 服务间鉴权：所有请求（含 SSE exchange/RAG）统一携带 X-Agent-Token
+                .requestInterceptor((request, body, execution) -> {
+                    request.getHeaders().set("X-Agent-Token", internalToken);
+                    return execution.execute(request, body);
+                })
                 .build();
-        log.info("[AgentClient] Agent 服务地址: {}（无状态协议 + 连接池 + 熔断/重试）", baseUrl);
+        log.info("[AgentClient] Agent 服务地址: {}（无状态协议 + 连接池 + 熔断/重试 + 内部鉴权）", baseUrl);
     }
 
     // ==================== 对话协议 DTO ====================

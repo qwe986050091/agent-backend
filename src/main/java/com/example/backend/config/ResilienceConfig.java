@@ -9,6 +9,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.HttpServerErrorException;
 import org.springframework.web.client.ResourceAccessException;
 
@@ -52,8 +53,8 @@ public class ResilienceConfig {
                 .permittedNumberOfCallsInHalfOpenState(permittedInHalfOpen)
                 // SSE 长流/长回复属正常，慢调用一律不计入熔断
                 .slowCallRateThreshold(100f)
-                // 参数错误（4xx 语义）不算 agent 故障
-                .ignoreExceptions(IllegalArgumentException.class)
+                // 4xx（参数错误/内部 token 不匹配等客户端/配置问题）不算 agent 服务故障，不顶开熔断
+                .ignoreExceptions(IllegalArgumentException.class, HttpClientErrorException.class)
                 .build();
 
         CircuitBreaker breaker = CircuitBreaker.of("agent", config);
