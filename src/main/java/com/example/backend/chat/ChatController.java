@@ -23,6 +23,8 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
+import java.io.IOException;
+import java.io.InputStream;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -35,6 +37,7 @@ import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * 对话接口（需登录）
@@ -148,9 +151,21 @@ public class ChatController {
 
         // 5 分钟超时：超长回复/僵死连接不会无限占用线程与连接
         SseEmitter emitter = new SseEmitter(SSE_TIMEOUT_MS);
+        // agent 响应体流引用（取消钩子）：前端断开/超时时 close 该流，主动终止对 agent 的请求
+        AtomicReference<InputStream> agentBodyRef = new AtomicReference<>();
         emitter.onTimeout(() -> {
-            log.warn("[Chat] SSE 超过 {}ms 未完成，主动断开", SSE_TIMEOUT_MS);
+            log.warn("[Chat] SSE 超过 {}ms 未完成，主动断开并取消 agent 请求", SSE_TIMEOUT_MS);
+            closeAgentStream(agentBodyRef);
             emitter.completeWithError(new TimeoutException("响应超时，请重试"));
+        });
+        emitter.onError(e -> {
+            // 前端断开/发送失败：主动取消对 agent 的流式请求（agent 侧随即中断 LLM 生成）
+            log.info("[Chat] 前端连接断开，取消 agent 流式请求");
+            closeAgentStream(agentBodyRef);
+        });
+        emitter.onCompletion(() -> {
+            // 流正常结束（agentBodyRef 已由 AgentClient 关闭）；兜底再关一次，确保无残留
+            closeAgentStream(agentBodyRef);
         });
 
         if (message == null || message.trim().isEmpty()) {
@@ -173,7 +188,8 @@ public class ChatController {
                     (fullAnswer, summary) -> {
                         saveMessage(userId, "assistant", fullAnswer);
                         saveSummary(userId, summary);
-                    }));
+                    },
+                    agentBodyRef));
         } catch (RejectedExecutionException e) {
             // 线程池/队列已满：快速失败，不排队堆积
             log.warn("[Chat] 流式线程池已满，拒绝请求");
@@ -181,6 +197,18 @@ public class ChatController {
         }
 
         return emitter;
+    }
+
+    /** 关闭正在进行的 agent 流式请求响应流（前端断开/超时取消钩子），未开始或已结束则空操作 */
+    private static void closeAgentStream(AtomicReference<InputStream> bodyRef) {
+        InputStream in = bodyRef.get();
+        if (in != null) {
+            try {
+                in.close();
+            } catch (IOException ignored) {
+                // 已断开则忽略
+            }
+        }
     }
 
     @GetMapping("/history")

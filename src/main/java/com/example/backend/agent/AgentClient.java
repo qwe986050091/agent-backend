@@ -16,6 +16,7 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.io.BufferedReader;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.net.http.HttpClient;
 import java.nio.charset.StandardCharsets;
@@ -27,6 +28,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
 import java.util.function.Supplier;
 
@@ -143,10 +145,16 @@ public class AgentClient {
      *
      * 阻塞方法，需在工作线程中调用。仅过熔断器（流式不重试）；熔断打开时立即失败。
      *
+     * 中断传播：调用方把 {@code bodyRef}（本次请求的 agent 响应体流引用）交进来，
+     * 前端断开时通过 {@code bodyRef.get().close()} 关闭该流，让阻塞中的 readLine()
+     * 立即抛 IOException 退出，从而真正取消对 agent 的请求（agent 侧同步感知断连）。
+     *
      * @param onComplete 流正常结束后回调，参数为（完整回复文本，最新摘要）
+     * @param bodyRef    由调用方持有、本方法填充的 agent 响应体流引用（取消钩子）
      */
     public void chatStream(AgentChatPayload payload, SseEmitter emitter,
-                           BiConsumer<String, String> onComplete) {
+                           BiConsumer<String, String> onComplete,
+                           AtomicReference<InputStream> bodyRef) {
         StringBuilder fullAnswer = new StringBuilder();
         String[] memorySummary = new String[]{null};
         // 仅过熔断器（流式不可重试）；RestClient 会把底层 IOException 包装为 ResourceAccessException（非受检）
@@ -159,6 +167,8 @@ public class AgentClient {
                         if (response.getStatusCode().isError()) {
                             throw new IllegalStateException("Agent 流式接口返回错误状态: " + response.getStatusCode());
                         }
+                        // 暴露响应体流：前端断开时由调用方 close 该流以取消本次请求
+                        bodyRef.set(response.getBody());
                         // 逐行解析 SSE：空行分隔事件；event: 行声明事件类型，data: 行为数据
                         try (BufferedReader reader = new BufferedReader(
                                 new InputStreamReader(response.getBody(), StandardCharsets.UTF_8))) {
