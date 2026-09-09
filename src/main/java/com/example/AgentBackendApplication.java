@@ -2,6 +2,7 @@ package com.example;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.boot.context.properties.ConfigurationPropertiesScan;
 
 /**
  * Agent 对话网页后端启动类
@@ -11,6 +12,7 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
  *   - com.example.backend.* ：网页后端业务（用户认证、Skill 上传、对话记录）
  */
 @SpringBootApplication
+@ConfigurationPropertiesScan
 public class AgentBackendApplication {
 
     public static void main(String[] args) {

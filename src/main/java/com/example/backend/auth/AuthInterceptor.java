@@ -11,7 +11,7 @@ import org.springframework.web.servlet.HandlerInterceptor;
  * 登录鉴权拦截器
  *
  * 从 Authorization: Bearer <token>（或 X-Auth-Token 头）取令牌，
- * 查库得到当前用户后放入 request 属性，供 Controller 使用。
+ * 经 Redis 会话校验（自动滑动续期）得到 userId 后查库加载用户，放入 request 属性。
  */
 @Component
 public class AuthInterceptor implements HandlerInterceptor {
@@ -19,9 +19,11 @@ public class AuthInterceptor implements HandlerInterceptor {
     /** request 属性名：当前登录用户 */
     public static final String CURRENT_USER_ATTR = "currentUser";
 
+    private final SessionStore sessionStore;
     private final UserRepository userRepository;
 
-    public AuthInterceptor(UserRepository userRepository) {
+    public AuthInterceptor(SessionStore sessionStore, UserRepository userRepository) {
+        this.sessionStore = sessionStore;
         this.userRepository = userRepository;
     }
 
@@ -34,7 +36,8 @@ public class AuthInterceptor implements HandlerInterceptor {
         }
 
         String token = extractToken(request);
-        UserEntity user = token == null ? null : userRepository.findByToken(token).orElse(null);
+        Long userId = sessionStore.validate(token);
+        UserEntity user = userId == null ? null : userRepository.findById(userId).orElse(null);
 
         if (user == null) {
             response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);

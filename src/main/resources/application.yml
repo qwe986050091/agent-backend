@@ -32,6 +32,16 @@ spring:
         dialect: org.hibernate.dialect.MySQLDialect
     show-sql: false
 
+  # ===== Redis（登录会话 + 失败限流） =====
+  # 密码由环境变量 REDIS_PASSWORD 注入（生产 systemd unit 配好 Redis requirepass 后设置）；
+  # 本地无密码 Redis 留空即可。未配置时连接失败会在登录/鉴权时报错（fail-fast 风格）
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      timeout: 2s
+
   # Skill 文件上传大小限制
   servlet:
     multipart:
@@ -59,6 +69,15 @@ agent:
     retry:
       max-attempts: 2                 # 最多尝试 2 次（即 1 次重试），仅连接失败/读超时/5xx
       wait-duration: 1s
+
+# ===== 认证（登录会话 + 失败限流） =====
+auth:
+  # 会话有效期（秒）：每次携带有效 token 的请求自动滑动续期；到期后 401 自动跳登录
+  session-ttl-seconds: 604800   # 7 天
+  # 登录失败限流：fail-window 秒窗口内失败 max-failures 次 → 锁定 lock-seconds 秒（按用户名 + IP 双维度）
+  fail-window-seconds: 600      # 10 分钟
+  max-failures: 5
+  lock-seconds: 900             # 15 分钟
 
 # ===== 日志配置 =====
 logging:

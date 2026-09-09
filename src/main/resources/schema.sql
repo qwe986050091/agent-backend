@@ -4,17 +4,15 @@
 -- 也可手动执行：mysql -uroot -p agent_chat < schema.sql
 -- ============================================================
 
--- 用户表
+-- 用户表（登录令牌不再存库：会话在 Redis，TTL 过期 + 滑动续期 + 单端互踢）
 CREATE TABLE IF NOT EXISTS app_user (
     id            BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键',
     username      VARCHAR(50)  NOT NULL COMMENT '登录用户名',
     password_hash VARCHAR(100) NOT NULL COMMENT 'BCrypt 密码哈希',
     nickname      VARCHAR(50)           DEFAULT NULL COMMENT '昵称',
-    token         VARCHAR(64)           DEFAULT NULL COMMENT '登录令牌（登录下发，登出清空）',
     created_at    DATETIME              DEFAULT NULL COMMENT '注册时间',
     PRIMARY KEY (id),
-    UNIQUE KEY uk_user_username (username),
-    UNIQUE KEY uk_user_token (token)
+    UNIQUE KEY uk_user_username (username)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='用户表';
 
 -- Skill 元数据表（平台所有技能：内置 + 用户上传）

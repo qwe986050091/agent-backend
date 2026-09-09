@@ -17,8 +17,7 @@ import java.time.LocalDateTime;
 @Entity
 @Table(name = "app_user",
         uniqueConstraints = {
-                @UniqueConstraint(columnNames = "username"),
-                @UniqueConstraint(columnNames = "token")
+                @UniqueConstraint(columnNames = "username")
         })
 public class UserEntity {
 
@@ -38,10 +37,6 @@ public class UserEntity {
     @Column(length = 50)
     private String nickname;
 
-    /** 登录令牌（登录后下发，登出清空） */
-    @Column(length = 64)
-    private String token;
-
     private LocalDateTime createdAt;
 
     @PrePersist
@@ -59,8 +54,6 @@ public class UserEntity {
     public void setPasswordHash(String passwordHash) { this.passwordHash = passwordHash; }
     public String getNickname() { return nickname; }
     public void setNickname(String nickname) { this.nickname = nickname; }
-    public String getToken() { return token; }
-    public void setToken(String token) { this.token = token; }
     public LocalDateTime getCreatedAt() { return createdAt; }
     public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }
 }

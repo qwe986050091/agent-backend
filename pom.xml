@@ -48,6 +48,12 @@
             <artifactId>spring-security-crypto</artifactId>
         </dependency>
 
+        <!-- Redis：登录会话（TTL 过期 + 滑动续期 + 单端互踢）+ 登录失败限流；Lettuce 单连接够用 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis</artifactId>
+        </dependency>
+
         <!-- Resilience4j：backend → agent 调用的熔断器 + 重试（编程式装配，不引 starter/AOP） -->
         <dependency>
             <groupId>io.github.resilience4j</groupId>

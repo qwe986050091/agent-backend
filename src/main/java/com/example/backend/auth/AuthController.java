@@ -16,13 +16,13 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.util.HashMap;
 import java.util.Map;
-import java.util.UUID;
 
 /**
  * 认证接口：注册 / 登录 / 登出 / 当前用户
  *
- * 令牌方案：登录成功后生成随机 token 存入用户表，后续请求通过
- * Authorization: Bearer <token> 携带（见 AuthInterceptor）。
+ * 令牌方案：登录成功后生成随机 token 存入 Redis 会话（TTL 过期 + 滑动续期 + 单端互踢），
+ * 后续请求通过 Authorization: Bearer <token> 携带（见 AuthInterceptor）。
+ * 登录/注册接口带失败限流（用户名 + IP 双维度，连续失败锁定），防暴力破解。
  */
 @RestController
 @RequestMapping("/api/auth")
@@ -30,15 +30,24 @@ public class AuthController {
 
     private final UserRepository userRepository;
     private final PasswordEncoder passwordEncoder = new BCryptPasswordEncoder();
+    private final SessionStore sessionStore;
+    private final LoginRateLimiter rateLimiter;
 
-    public AuthController(UserRepository userRepository) {
+    public AuthController(UserRepository userRepository, SessionStore sessionStore, LoginRateLimiter rateLimiter) {
         this.userRepository = userRepository;
+        this.sessionStore = sessionStore;
+        this.rateLimiter = rateLimiter;
     }
 
     /** 注册（注册成功即自动登录，返回 token） */
     @PostMapping("/register")
     @Transactional
-    public ResponseEntity<?> register(@RequestBody AuthRequest request) {
+    public ResponseEntity<?> register(@RequestBody AuthRequest request, HttpServletRequest http) {
+        String ip = clientIp(http);
+        if (rateLimiter.isLockedByIp(ip)) {
+            return tooManyRequests();
+        }
+
         String username = trim(request.getUsername());
         String password = request.getPassword();
         String nickname = trim(request.getNickname());
@@ -50,6 +59,7 @@ public class AuthController {
             return badRequest("密码至少 6 位");
         }
         if (userRepository.existsByUsername(username)) {
+            rateLimiter.recordFailure(username, ip);
             return badRequest("用户名已存在");
         }
 
@@ -57,45 +67,43 @@ public class AuthController {
         user.setUsername(username);
         user.setPasswordHash(passwordEncoder.encode(password));
         user.setNickname(nickname == null || nickname.isBlank() ? username : nickname);
-        user.setToken(newToken());
         userRepository.save(user);
 
-        return ResponseEntity.ok(authResponse(user));
+        String token = sessionStore.createSession(user.getId());
+        return ResponseEntity.ok(authResponse(user, token));
     }
 
     /** 登录 */
     @PostMapping("/login")
     @Transactional
-    public ResponseEntity<?> login(@RequestBody AuthRequest request) {
+    public ResponseEntity<?> login(@RequestBody AuthRequest request, HttpServletRequest http) {
         String username = trim(request.getUsername());
         String password = request.getPassword();
+        String ip = clientIp(http);
 
         if (username == null || password == null) {
             return badRequest("用户名和密码不能为空");
         }
+        if (rateLimiter.isLocked(username, ip)) {
+            return tooManyRequests();
+        }
 
         UserEntity user = userRepository.findByUsername(username).orElse(null);
         if (user == null || !passwordEncoder.matches(password, user.getPasswordHash())) {
+            rateLimiter.recordFailure(username, ip);
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
                     .body(error("AUTH_FAILED", "用户名或密码错误"));
         }
 
-        user.setToken(newToken());
-        userRepository.save(user);
-        return ResponseEntity.ok(authResponse(user));
+        rateLimiter.recordSuccess(username, ip);
+        String token = sessionStore.createSession(user.getId());
+        return ResponseEntity.ok(authResponse(user, token));
     }
 
-    /** 登出：清空当前 token */
+    /** 登出：删除 Redis 会话 */
     @PostMapping("/logout")
-    @Transactional
     public ResponseEntity<?> logout(HttpServletRequest request) {
-        String token = AuthInterceptor.extractToken(request);
-        if (token != null) {
-            userRepository.findByToken(token).ifPresent(user -> {
-                user.setToken(null);
-                userRepository.save(user);
-            });
-        }
+        sessionStore.revoke(AuthInterceptor.extractToken(request));
         return ResponseEntity.ok(Map.of("message", "已退出登录"));
     }
 
@@ -103,18 +111,32 @@ public class AuthController {
     @GetMapping("/me")
     public ResponseEntity<?> me(HttpServletRequest request) {
         String token = AuthInterceptor.extractToken(request);
-        UserEntity user = token == null ? null : userRepository.findByToken(token).orElse(null);
+        Long userId = sessionStore.validate(token);
+        UserEntity user = userId == null ? null : userRepository.findById(userId).orElse(null);
         if (user == null) {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
                     .body(error("UNAUTHORIZED", "未登录或登录已过期"));
         }
-        return ResponseEntity.ok(authResponse(user));
+        return ResponseEntity.ok(authResponse(user, token));
     }
 
     // ==================== 工具方法 ====================
 
-    private static String newToken() {
-        return UUID.randomUUID().toString().replace("-", "");
+    /** 取客户端 IP（经 nginx 反代时取 X-Forwarded-For 第一个地址） */
+    private static String clientIp(HttpServletRequest request) {
+        String xff = request.getHeader("X-Forwarded-For");
+        String ip;
+        if (xff != null && !xff.isBlank()) {
+            int comma = xff.indexOf(',');
+            ip = (comma == -1 ? xff : xff.substring(0, comma)).trim();
+        } else {
+            ip = request.getRemoteAddr();
+        }
+        if (ip == null || ip.isEmpty()) {
+            return "unknown";
+        }
+        // 本地回环地址统一为 127.0.0.1（Java 侧 IPv6 回环为 0:0:0:0:0:0:0:1，避免限流桶分裂）
+        return ip.equals("0:0:0:0:0:0:0:1") || ip.equals("::1") ? "127.0.0.1" : ip;
     }
 
     private static String trim(String s) {
@@ -125,6 +147,11 @@ public class AuthController {
         return ResponseEntity.badRequest().body(error("BAD_REQUEST", message));
     }
 
+    private static ResponseEntity<Map<String, Object>> tooManyRequests() {
+        return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
+                .body(error("RATE_LIMITED", "尝试次数过多，请稍后再试"));
+    }
+
     private static Map<String, Object> error(String code, String message) {
         Map<String, Object> m = new HashMap<>();
         m.put("code", code);
@@ -132,9 +159,9 @@ public class AuthController {
         return m;
     }
 
-    private static Map<String, Object> authResponse(UserEntity user) {
+    private static Map<String, Object> authResponse(UserEntity user, String token) {
         Map<String, Object> data = new HashMap<>();
-        data.put("token", user.getToken());
+        data.put("token", token);
         data.put("username", user.getUsername());
         data.put("nickname", user.getNickname());
         return data;
