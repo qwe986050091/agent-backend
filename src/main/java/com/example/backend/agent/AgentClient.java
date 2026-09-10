@@ -101,8 +101,9 @@ public class AgentClient {
     /** 历史消息（与 agent 端 HistoryMessage 对应） */
     public record AgentChatMessage(String role, String content) {}
 
-    /** 对话请求 payload：userId + 消息 + 摘要 + 近期历史 + 已挂载技能定义 */
+    /** 对话请求 payload：userId + 会话 + 消息 + 摘要 + 近期历史 + 已挂载技能定义 */
     public record AgentChatPayload(String userId,
+                                   Long conversationId,
                                    String message,
                                    String summary,
                                    List<AgentChatMessage> history,

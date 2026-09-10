@@ -25,6 +25,10 @@ public class ChatMessageEntity {
     @Column(name = "user_id", nullable = false, length = 100)
     private String userId;
 
+    /** 所属会话（0=默认/历史会话） */
+    @Column(name = "conversation_id", nullable = false)
+    private Long conversationId = 0L;
+
     /** 角色：user / assistant */
     @Column(nullable = false, length = 20)
     private String role;
@@ -46,6 +50,8 @@ public class ChatMessageEntity {
     public void setId(Long id) { this.id = id; }
     public String getUserId() { return userId; }
     public void setUserId(String userId) { this.userId = userId; }
+    public Long getConversationId() { return conversationId; }
+    public void setConversationId(Long conversationId) { this.conversationId = conversationId; }
     public String getRole() { return role; }
     public void setRole(String role) { this.role = role; }
     public String getContent() { return content; }

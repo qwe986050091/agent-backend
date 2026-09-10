@@ -41,15 +41,28 @@ CREATE TABLE IF NOT EXISTS user_skill (
     KEY idx_user_skill_user (user_id)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='用户-Skill 挂载关系表';
 
--- 对话消息记录表
-CREATE TABLE IF NOT EXISTS chat_message (
-    id         BIGINT      NOT NULL AUTO_INCREMENT COMMENT '主键',
+-- 对话会话表（多会话：每个用户可建多个独立会话，互不串上下文）
+-- 注：chat_message.conversation_id = 0 表示"默认/历史会话"（多会话功能上线前的遗留数据）
+CREATE TABLE IF NOT EXISTS conversation (
+    id         BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键',
     user_id    VARCHAR(100) NOT NULL COMMENT '所属用户（用户名）',
-    role       VARCHAR(20)  NOT NULL COMMENT '角色：user / assistant',
-    content    TEXT         NOT NULL COMMENT '消息内容',
-    created_at DATETIME              DEFAULT NULL COMMENT '发送时间',
+    title      VARCHAR(200) NOT NULL COMMENT '会话标题',
+    created_at DATETIME              DEFAULT NULL COMMENT '创建时间',
+    updated_at DATETIME              DEFAULT NULL COMMENT '最近活跃时间（列表按此倒序）',
     PRIMARY KEY (id),
-    KEY idx_chat_user_time (user_id, created_at)
+    KEY idx_conversation_user (user_id, updated_at)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='对话会话表';
+
+-- 对话消息记录表（conversation_id 区分会话；0=默认/历史会话）
+CREATE TABLE IF NOT EXISTS chat_message (
+    id              BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键',
+    user_id         VARCHAR(100) NOT NULL COMMENT '所属用户（用户名）',
+    conversation_id BIGINT       NOT NULL DEFAULT 0 COMMENT '所属会话（0=默认/历史会话）',
+    role            VARCHAR(20)  NOT NULL COMMENT '角色：user / assistant',
+    content         TEXT         NOT NULL COMMENT '消息内容',
+    created_at      DATETIME              DEFAULT NULL COMMENT '发送时间',
+    PRIMARY KEY (id),
+    KEY idx_chat_user_conv (user_id, conversation_id, created_at)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='对话消息记录表';
 
 -- RAG 知识文档表（用户上传的文档元数据；文本内容切块后存入 agent 侧向量库）
@@ -68,9 +81,11 @@ CREATE TABLE IF NOT EXISTS knowledge_document (
 
 -- Agent 对话记忆摘要表（agent 无状态化：摘要由 agent 侧 LLM 压缩生成，backend 持久化，
 -- 每次对话请求随 payload 回传给 agent 重建记忆；agent 重启/多实例不丢上下文）
+-- 主键 (user_id, conversation_id)：摘要按会话隔离（0=默认/历史会话）
 CREATE TABLE IF NOT EXISTS agent_memory (
-    user_id    VARCHAR(100) NOT NULL COMMENT '所属用户（用户名）',
-    summary    TEXT                  DEFAULT NULL COMMENT '会话历史摘要纯文本',
-    updated_at DATETIME              DEFAULT NULL COMMENT '最近更新时间',
-    PRIMARY KEY (user_id)
+    user_id         VARCHAR(100) NOT NULL COMMENT '所属用户（用户名）',
+    conversation_id BIGINT       NOT NULL DEFAULT 0 COMMENT '所属会话（0=默认/历史会话）',
+    summary         TEXT                  DEFAULT NULL COMMENT '会话历史摘要纯文本',
+    updated_at      DATETIME              DEFAULT NULL COMMENT '最近更新时间',
+    PRIMARY KEY (user_id, conversation_id)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='Agent 对话记忆摘要表';

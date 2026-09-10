@@ -20,6 +20,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
@@ -86,6 +87,7 @@ public class ChatController {
     private final AgentClient agentClient;
     private final ChatMessageRepository chatMessageRepository;
     private final AgentMemoryRepository agentMemoryRepository;
+    private final ConversationRepository conversationRepository;
     private final UserSkillRepository userSkillRepository;
     private final SkillRepository skillRepository;
     private final ObjectMapper objectMapper;
@@ -93,15 +95,30 @@ public class ChatController {
     public ChatController(AgentClient agentClient,
                           ChatMessageRepository chatMessageRepository,
                           AgentMemoryRepository agentMemoryRepository,
+                          ConversationRepository conversationRepository,
                           UserSkillRepository userSkillRepository,
                           SkillRepository skillRepository,
                           ObjectMapper objectMapper) {
         this.agentClient = agentClient;
         this.chatMessageRepository = chatMessageRepository;
         this.agentMemoryRepository = agentMemoryRepository;
+        this.conversationRepository = conversationRepository;
         this.userSkillRepository = userSkillRepository;
         this.skillRepository = skillRepository;
         this.objectMapper = objectMapper;
+    }
+
+    /** 解析请求中的会话 id（缺省 0 = 默认/历史会话） */
+    private static Long conversationIdOf(Map<String, String> body) {
+        if (body == null) {
+            return ConversationController.DEFAULT_CONVERSATION_ID;
+        }
+        try {
+            String raw = body.get("conversationId");
+            return raw == null || raw.isBlank() ? ConversationController.DEFAULT_CONVERSATION_ID : Long.valueOf(raw.trim());
+        } catch (NumberFormatException e) {
+            return ConversationController.DEFAULT_CONVERSATION_ID;
+        }
     }
 
     @PostMapping
@@ -116,12 +133,13 @@ public class ChatController {
         }
 
         String userId = user.getUsername();
+        Long conversationId = conversationIdOf(body);
 
         // 1. 先组装状态（必须在保存当前消息之前，否则当前消息会被当成历史重复下发）
-        AgentClient.AgentChatPayload payload = buildPayload(userId, message);
+        AgentClient.AgentChatPayload payload = buildPayload(userId, conversationId, message);
 
         // 2. 保存用户消息
-        saveMessage(userId, "user", message);
+        saveMessage(userId, conversationId, "user", message);
 
         // 3. HTTP 调用 agent 工程（含重试/熔断；失败或熔断中返回 503 友好降级）
         AgentClient.AgentChatResult result;
@@ -135,8 +153,9 @@ public class ChatController {
         }
 
         // 4. 保存助手回复 + 回写最新摘要
-        saveMessage(userId, "assistant", result.answer());
-        saveSummary(userId, result.summary());
+        saveMessage(userId, conversationId, "assistant", result.answer());
+        saveSummary(userId, conversationId, result.summary());
+        touchConversation(userId, conversationId);
 
         return ResponseEntity.ok(Map.of("answer", result.answer()));
     }
@@ -174,20 +193,22 @@ public class ChatController {
         }
 
         String userId = user.getUsername();
+        Long conversationId = conversationIdOf(body);
 
         // 1. 先组装状态（在保存当前消息之前）
-        AgentClient.AgentChatPayload payload = buildPayload(userId, message);
+        AgentClient.AgentChatPayload payload = buildPayload(userId, conversationId, message);
 
         // 2. 用户消息先落库
-        saveMessage(userId, "user", message);
+        saveMessage(userId, conversationId, "user", message);
 
         try {
             streamExecutor.execute(() -> agentClient.chatStream(
                     payload, emitter,
                     // 流正常结束：完整回复 + 最新摘要落库
                     (fullAnswer, summary) -> {
-                        saveMessage(userId, "assistant", fullAnswer);
-                        saveSummary(userId, summary);
+                        saveMessage(userId, conversationId, "assistant", fullAnswer);
+                        saveSummary(userId, conversationId, summary);
+                        touchConversation(userId, conversationId);
                     },
                     agentBodyRef));
         } catch (RejectedExecutionException e) {
@@ -212,10 +233,11 @@ public class ChatController {
     }
 
     @GetMapping("/history")
-    public ResponseEntity<?> history(HttpServletRequest request) {
+    public ResponseEntity<?> history(HttpServletRequest request, @RequestParam(defaultValue = "0") Long conversationId) {
         UserEntity user = (UserEntity) request.getAttribute(AuthInterceptor.CURRENT_USER_ATTR);
         List<ChatMessageEntity> messages =
-                chatMessageRepository.findByUserIdOrderByCreatedAtAsc(user.getUsername());
+                chatMessageRepository.findByUserIdAndConversationIdOrderByCreatedAtAsc(
+                        user.getUsername(), conversationId);
 
         List<Map<String, Object>> list = messages.stream().map(m -> {
             Map<String, Object> item = new HashMap<>();
@@ -231,23 +253,24 @@ public class ChatController {
     // ==================== 无状态 payload 组装 ====================
 
     /**
-     * 从 MySQL 组装 agent 对话请求：摘要 + 最近历史（升序）+ 已挂载技能定义。
+     * 从 MySQL 组装 agent 对话请求：会话摘要 + 最近历史（升序）+ 已挂载技能定义。
+     * 摘要与历史均按 (userId, conversationId) 隔离，保证多会话互不串上下文。
      */
-    private AgentClient.AgentChatPayload buildPayload(String userId, String message) {
-        String summary = agentMemoryRepository.findById(userId)
+    private AgentClient.AgentChatPayload buildPayload(String userId, Long conversationId, String message) {
+        String summary = agentMemoryRepository.findById(new AgentMemoryId(userId, conversationId))
                 .map(AgentMemoryEntity::getSummary)
                 .orElse(null);
 
-        List<AgentClient.AgentChatMessage> history = recentHistory(userId);
+        List<AgentClient.AgentChatMessage> history = recentHistory(userId, conversationId);
         List<Map<String, Object>> skills = mountedSkillDefs(userId);
 
-        return new AgentClient.AgentChatPayload(userId, message, summary, history, skills);
+        return new AgentClient.AgentChatPayload(userId, conversationId, message, summary, history, skills);
     }
 
-    /** 最近 {@link #HISTORY_LIMIT} 条历史消息（反转为时间升序） */
-    private List<AgentClient.AgentChatMessage> recentHistory(String userId) {
+    /** 最近 {@link #HISTORY_LIMIT} 条会话历史消息（反转为时间升序） */
+    private List<AgentClient.AgentChatMessage> recentHistory(String userId, Long conversationId) {
         List<ChatMessageEntity> recentDesc =
-                chatMessageRepository.findTop30ByUserIdOrderByIdDesc(userId);
+                chatMessageRepository.findTop30ByUserIdAndConversationIdOrderByIdDesc(userId, conversationId);
         if (recentDesc.isEmpty()) {
             return List.of();
         }
@@ -293,31 +316,46 @@ public class ChatController {
 
     // ==================== 落库 ====================
 
-    private void saveMessage(String userId, String role, String content) {
+    private void saveMessage(String userId, Long conversationId, String role, String content) {
         ChatMessageEntity entity = new ChatMessageEntity();
         entity.setUserId(userId);
+        entity.setConversationId(conversationId);
         entity.setRole(role);
         entity.setContent(content);
         chatMessageRepository.save(entity);
 
-        // 异步写入 RAG 长期记忆（向量索引）；失败只记日志，不影响聊天主流程
+        // 异步写入 RAG 长期记忆（向量索引，跨会话）；失败只记日志，不影响聊天主流程
         indexConversationAsync(userId, role, content);
     }
 
-    /** 回写 agent 回传的最新摘要（无摘要则跳过）；失败不影响聊天主流程 */
-    private void saveSummary(String userId, String summary) {
+    /** 回写 agent 回传的最新摘要（按会话；无摘要则跳过）；失败不影响聊天主流程 */
+    private void saveSummary(String userId, Long conversationId, String summary) {
         if (summary == null || summary.isBlank()) {
             return;
         }
         try {
-            AgentMemoryEntity entity = agentMemoryRepository.findById(userId)
-                    .orElseGet(() -> new AgentMemoryEntity(userId, summary));
+            AgentMemoryId id = new AgentMemoryId(userId, conversationId);
+            AgentMemoryEntity entity = agentMemoryRepository.findById(id)
+                    .orElseGet(() -> new AgentMemoryEntity(userId, conversationId, summary));
             entity.setSummary(summary);
             entity.setUpdatedAt(LocalDateTime.now());
             agentMemoryRepository.save(entity);
         } catch (Exception e) {
             log.warn("[Chat] 记忆摘要落库失败（不影响聊天）: {}", e.getMessage());
         }
+    }
+
+    /** 对话后刷新会话的最近活跃时间（默认会话 0 不建表记录，跳过） */
+    private void touchConversation(String userId, Long conversationId) {
+        if (conversationId == null || conversationId == ConversationController.DEFAULT_CONVERSATION_ID) {
+            return;
+        }
+        conversationRepository.findById(conversationId).ifPresent(conv -> {
+            if (conv.getUserId().equals(userId)) {
+                conv.setUpdatedAt(LocalDateTime.now());
+                conversationRepository.save(conv);
+            }
+        });
     }
 
     /** 异步把一条对话索引到 agent 侧向量库（RAG 长期记忆），异常不抛出 */
