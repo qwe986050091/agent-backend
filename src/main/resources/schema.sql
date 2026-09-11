@@ -89,3 +89,77 @@ CREATE TABLE IF NOT EXISTS agent_memory (
     updated_at      DATETIME              DEFAULT NULL COMMENT '最近更新时间',
     PRIMARY KEY (user_id, conversation_id)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='Agent 对话记忆摘要表';
+
+-- ============================================================
+-- P2-10 全链路可观测：token 用量 / 工具调用 / RAG 召回 审计表
+-- 注意：chat_message.trace_id 列无法用 IF NOT EXISTS 自动加，
+--       需手工执行（见文件末尾 ALTER 语句，沿用 P1-8 做法）。
+-- ============================================================
+
+-- 每轮对话一行的 LLM token 用量与费用（按用户/会话/模型可聚合出账单）
+CREATE TABLE IF NOT EXISTS llm_usage_record (
+    id                   BIGINT        NOT NULL AUTO_INCREMENT COMMENT '主键',
+    trace_id             VARCHAR(64)   NOT NULL COMMENT '全链路 traceId',
+    user_id              VARCHAR(100)  NOT NULL COMMENT '所属用户（用户名）',
+    conversation_id      BIGINT        NOT NULL DEFAULT 0 COMMENT '所属会话（0=默认会话）',
+    assistant_message_id BIGINT                 DEFAULT NULL COMMENT '关联的助手消息 id（chat_message.id）',
+    model                VARCHAR(100)           DEFAULT NULL COMMENT '实际服务模型名',
+    input_tokens         INT           NOT NULL DEFAULT 0 COMMENT '输入 token 合计',
+    output_tokens        INT           NOT NULL DEFAULT 0 COMMENT '输出 token 合计',
+    total_tokens         INT           NOT NULL DEFAULT 0 COMMENT '总 token 合计',
+    cost_yuan            DECIMAL(12,6) NOT NULL DEFAULT 0 COMMENT '估算费用（元，按 billing 配置单价）',
+    rounds               INT           NOT NULL DEFAULT 0 COMMENT 'LLM 调用轮次数',
+    fallback             TINYINT(1)    NOT NULL DEFAULT 0 COMMENT '是否走了备用模型',
+    cancelled            TINYINT(1)    NOT NULL DEFAULT 0 COMMENT '是否被中途取消',
+    duration_ms          BIGINT        NOT NULL DEFAULT 0 COMMENT 'agent 侧整轮耗时 ms',
+    created_at           DATETIME               DEFAULT NULL COMMENT '创建时间',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_usage_trace (trace_id),
+    KEY idx_usage_user_created (user_id, created_at),
+    KEY idx_usage_conv (conversation_id)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='LLM token 用量与费用记录表';
+
+-- 每次工具调用一行（参数/结果预览/成败/耗时）
+CREATE TABLE IF NOT EXISTS tool_call_record (
+    id              BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键',
+    trace_id        VARCHAR(64)  NOT NULL COMMENT '全链路 traceId',
+    user_id         VARCHAR(100) NOT NULL COMMENT '所属用户（用户名）',
+    conversation_id BIGINT       NOT NULL DEFAULT 0 COMMENT '所属会话',
+    round_seq       INT          NOT NULL DEFAULT 0 COMMENT '发生在第几个 LLM 轮次',
+    tool_name       VARCHAR(100) NOT NULL COMMENT '工具方法名',
+    arguments       TEXT                  DEFAULT NULL COMMENT '参数 JSON（agent 侧截断 500）',
+    result_preview  VARCHAR(1000)         DEFAULT NULL COMMENT '结果文本预览（成功；截断 300）',
+    success         TINYINT(1)   NOT NULL DEFAULT 1 COMMENT '是否成功',
+    error_message   VARCHAR(500)          DEFAULT NULL COMMENT '失败错误摘要',
+    duration_ms     BIGINT       NOT NULL DEFAULT 0 COMMENT '近似执行耗时 ms',
+    created_at      DATETIME              DEFAULT NULL COMMENT '创建时间',
+    PRIMARY KEY (id),
+    KEY idx_tool_trace (trace_id),
+    KEY idx_tool_user_created (user_id, created_at)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='工具调用审计记录表';
+
+-- 每次 RAG 检索的每个召回片段一行（无召回也由 llm_usage_record 侧不体现；miss 仅在指标计数）
+CREATE TABLE IF NOT EXISTS rag_recall_record (
+    id              BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键',
+    trace_id        VARCHAR(64)  NOT NULL COMMENT '全链路 traceId',
+    user_id         VARCHAR(100) NOT NULL COMMENT '所属用户（用户名）',
+    conversation_id BIGINT       NOT NULL DEFAULT 0 COMMENT '所属会话',
+    query_text      VARCHAR(1000)         DEFAULT NULL COMMENT '触发检索的问题（截断 150）',
+    doc_id          VARCHAR(64)           DEFAULT NULL COMMENT '文档 id（历史对话片段可能为空）',
+    source_name     VARCHAR(255)          DEFAULT NULL COMMENT '来源名（文件名/历史对话）',
+    source_type     VARCHAR(20)           DEFAULT NULL COMMENT '来源类型 document/conversation',
+    segment_text    TEXT                  DEFAULT NULL COMMENT '召回片段文本（截断 100）',
+    score           DOUBLE       NOT NULL DEFAULT 0 COMMENT '向量相似度分数',
+    seq             INT          NOT NULL DEFAULT 0 COMMENT '片段在本次检索中的序号',
+    created_at      DATETIME              DEFAULT NULL COMMENT '创建时间',
+    PRIMARY KEY (id),
+    KEY idx_rag_trace (trace_id),
+    KEY idx_rag_user_created (user_id, created_at)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='RAG 召回审计记录表';
+
+-- ============================================================
+-- 手工迁移（CREATE TABLE IF NOT EXISTS 不会给已存在的表加列）：
+-- 本地与生产均需执行一次（P2-10）：
+-- ALTER TABLE chat_message ADD COLUMN trace_id VARCHAR(64) NULL COMMENT '全链路 traceId' AFTER id;
+-- CREATE INDEX idx_chat_message_trace ON chat_message (trace_id);
+-- ============================================================

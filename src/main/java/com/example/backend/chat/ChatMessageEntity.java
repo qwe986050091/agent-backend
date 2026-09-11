@@ -36,6 +36,10 @@ public class ChatMessageEntity {
     @Column(nullable = false, columnDefinition = "TEXT")
     private String content;
 
+    /** 全链路 traceId（P2-10；2026-09-10 前的历史消息为 null） */
+    @Column(name = "trace_id", length = 64)
+    private String traceId;
+
     @Column(name = "created_at")
     private LocalDateTime createdAt;
 
@@ -56,6 +60,8 @@ public class ChatMessageEntity {
     public void setRole(String role) { this.role = role; }
     public String getContent() { return content; }
     public void setContent(String content) { this.content = content; }
+    public String getTraceId() { return traceId; }
+    public void setTraceId(String traceId) { this.traceId = traceId; }
     public LocalDateTime getCreatedAt() { return createdAt; }
     public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }
 }

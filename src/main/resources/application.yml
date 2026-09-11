@@ -1,6 +1,20 @@
 server:
   port: 8081
 
+# ===== 管理端口（actuator/prometheus） =====
+# 独立端口且只绑 127.0.0.1：只供本机 Prometheus 抓取/排障，不经 nginx、不走安全组。
+management:
+  server:
+    port: ${MANAGEMENT_PORT:18081}
+    address: 127.0.0.1
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus
+  endpoint:
+    health:
+      show-details: never
+
 spring:
   application:
     name: agent-backend
@@ -70,6 +84,30 @@ agent:
       max-attempts: 2                 # 最多尝试 2 次（即 1 次重试），仅连接失败/读超时/5xx
       wait-duration: 1s
 
+# ===== LLM 计费单价（元 / 百万 token；P2-10 token 成本统计） =====
+# 依据 DeepSeek 官方 2026-09 公开刊例价（api-docs.deepseek.com）；
+# 注意：TokenUsage 未拆分缓存命中 token，输入统一按「缓存未命中」价（保守估算，可能略高估）；
+# 峰谷定价（Flash 0731 正式版）未区分，统一按闲时价。改价只需改这里重启，无需改代码。
+billing:
+  models:
+    # deepseek-chat 是 deepseek-v4-flash 非思考模式的兼容别名，同价；
+    # deepseek-flash 是 API 响应 metadata.modelName 实际返回的模型名（线上实测）
+    deepseek-v4-flash:
+      input-per-mtok: 1
+      output-per-mtok: 2
+    deepseek-flash:
+      input-per-mtok: 1
+      output-per-mtok: 2
+    deepseek-chat:
+      input-per-mtok: 1
+      output-per-mtok: 2
+    deepseek-v4-pro:
+      input-per-mtok: 3
+      output-per-mtok: 6
+    deepseek-v4-flash-vision-exp:
+      input-per-mtok: 1.5
+      output-per-mtok: 4.5
+
 # ===== 认证（登录会话 + 失败限流） =====
 auth:
   # 会话有效期（秒）：每次携带有效 token 的请求自动滑动续期；到期后 401 自动跳登录
@@ -86,4 +124,5 @@ logging:
     org.springframework: WARN
     org.hibernate.SQL: WARN
   pattern:
-    console: "%d{HH:mm:ss} %-5level %logger{36} - %msg%n"
+    # [traceId] 串联 frontend→backend→agent 全链路（无 trace 时显示 -）
+    console: "%d{HH:mm:ss} %-5level [%X{traceId:-}] %logger{36} - %msg%n"
