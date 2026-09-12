@@ -9,6 +9,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -29,7 +30,9 @@ public class SkillService {
     /** 内置技能元数据（与 agent 工程内置 Skill 对应，首次启动写入 skill 表） */
     public static final List<SkillEntity> BUILTIN_SKILLS = List.of(
             builtin("calculator", "数学计算技能：加减乘除、幂运算等"),
-            builtin("datetime", "时间日期技能：获取当前日期、时间、星期等"));
+            builtin("datetime", "时间日期技能：获取当前日期、时间、星期等"),
+            builtin("web", "联网助手：联网搜索最新信息、抓取网页正文"),
+            builtin("http-api", "HTTP 请求：调用第三方 HTTP API（高危，每次需确认）"));
 
     private final SkillRepository skillRepository;
     private final UserSkillRepository userSkillRepository;
@@ -147,6 +150,54 @@ public class SkillService {
             if (skillRepository.findByName(builtin.getName()).isEmpty()) {
                 skillRepository.save(builtin);
                 log.info("[SkillService] 内置 Skill 元数据落库: {}", builtin.getName());
+            }
+        }
+    }
+
+    /**
+     * 与 agent 内置技能目录同步（含 mcp:{server} 动态技能）：
+     * - catalog 中存在、库里缺失 → 插入 builtin 行；
+     * - mcp:* 描述变更 → 更新；
+     * - catalog 中已不存在的 mcp:* 行 → 连同用户挂载关系删除；
+     * agent 不可达（catalog=null）时跳过，不阻塞启动。
+     */
+    @Transactional
+    public void syncBuiltinCatalog() {
+        List<Map<String, Object>> catalog = agentClient.listBuiltinSkills();
+        if (catalog == null) {
+            log.warn("[SkillService] agent 内置技能目录不可达，跳过 MCP 目录同步");
+            return;
+        }
+        Set<String> liveNames = new java.util.HashSet<>();
+        for (Map<String, Object> item : catalog) {
+            Object nameVal = item.get("name");
+            if (nameVal == null) {
+                continue;
+            }
+            String name = nameVal.toString();
+            String desc = item.get("shortDescription") == null
+                    ? "" : item.get("shortDescription").toString();
+            liveNames.add(name);
+
+            SkillEntity entity = skillRepository.findByName(name).orElse(null);
+            if (entity == null) {
+                skillRepository.save(builtin(name, desc));
+                log.info("[SkillService] 内置 Skill 元数据落库（agent 目录同步）: {}", name);
+            } else if (entity.isBuiltin()
+                    && name.startsWith("mcp:")
+                    && !desc.equals(entity.getShortDescription())) {
+                entity.setShortDescription(desc);
+                skillRepository.save(entity);
+            } else if (!entity.isBuiltin()) {
+                log.warn("[SkillService] agent 内置技能名与自定义技能冲突，保留自定义行: {}", name);
+            }
+        }
+
+        for (SkillEntity stale : skillRepository.findByBuiltinTrueAndNameStartingWith("mcp:")) {
+            if (!liveNames.contains(stale.getName())) {
+                userSkillRepository.deleteBySkillName(stale.getName());
+                skillRepository.delete(stale);
+                log.info("[SkillService] 移除已下线 MCP 技能及其挂载关系: {}", stale.getName());
             }
         }
     }

@@ -2,6 +2,7 @@ package com.example.backend.chat;
 
 import com.example.backend.agent.AgentClient;
 import com.example.backend.agent.trace.TraceData;
+import com.example.backend.approval.ToolGrantStore;
 import com.example.backend.auth.AuthInterceptor;
 import com.example.backend.common.TraceMdcFilter;
 import com.example.backend.observability.BackendMetrics;
@@ -98,6 +99,7 @@ public class ChatController {
     private final ObjectMapper objectMapper;
     private final TracePersistenceService tracePersistenceService;
     private final BackendMetrics metrics;
+    private final ToolGrantStore toolGrantStore;
 
     public ChatController(AgentClient agentClient,
                           ChatMessageRepository chatMessageRepository,
@@ -107,7 +109,8 @@ public class ChatController {
                           SkillRepository skillRepository,
                           ObjectMapper objectMapper,
                           TracePersistenceService tracePersistenceService,
-                          BackendMetrics metrics) {
+                          BackendMetrics metrics,
+                          ToolGrantStore toolGrantStore) {
         this.agentClient = agentClient;
         this.chatMessageRepository = chatMessageRepository;
         this.agentMemoryRepository = agentMemoryRepository;
@@ -117,6 +120,7 @@ public class ChatController {
         this.objectMapper = objectMapper;
         this.tracePersistenceService = tracePersistenceService;
         this.metrics = metrics;
+        this.toolGrantStore = toolGrantStore;
     }
 
     /** 解析请求中的会话 id（缺省 0 = 默认/历史会话） */
@@ -348,8 +352,11 @@ public class ChatController {
 
         List<AgentClient.AgentChatMessage> history = recentHistory(userId, conversationId);
         List<Map<String, Object>> skills = mountedSkillDefs(userId);
+        // 会话级「始终允许」免确认工具（Redis；TTL 7 天）
+        List<String> allowedTools = List.copyOf(toolGrantStore.list(userId, conversationId));
 
-        return new AgentClient.AgentChatPayload(userId, conversationId, message, summary, history, skills);
+        return new AgentClient.AgentChatPayload(userId, conversationId, message, summary,
+                history, skills, allowedTools);
     }
 
     /** 最近 {@link #HISTORY_LIMIT} 条会话历史消息（反转为时间升序） */

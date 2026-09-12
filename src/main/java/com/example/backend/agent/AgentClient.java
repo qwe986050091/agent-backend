@@ -124,13 +124,14 @@ public class AgentClient {
     /** 历史消息（与 agent 端 HistoryMessage 对应） */
     public record AgentChatMessage(String role, String content) {}
 
-    /** 对话请求 payload：userId + 会话 + 消息 + 摘要 + 近期历史 + 已挂载技能定义 */
+    /** 对话请求 payload：userId + 会话 + 消息 + 摘要 + 近期历史 + 已挂载技能定义 + 会话级免确认工具 */
     public record AgentChatPayload(String userId,
                                    Long conversationId,
                                    String message,
                                    String summary,
                                    List<AgentChatMessage> history,
-                                   List<Map<String, Object>> skills) {}
+                                   List<Map<String, Object>> skills,
+                                   List<String> allowedTools) {}
 
     /** 同步对话结果：回复文本 + 回合后最新摘要 + traceId/trace 数据（用量/工具/召回） */
     public record AgentChatResult(String answer, String summary, String traceId, TraceData trace) {}
@@ -322,6 +323,11 @@ public class AgentClient {
             forwardNamedEvent(emitter, "trace-reset", data);
             return;
         }
+        if ("approval-request".equals(eventName)) {
+            // 高危工具审批请求：原样转发前端弹窗，不落库、不累积（决策走独立短连接）
+            forwardNamedEvent(emitter, "approval-request", data);
+            return;
+        }
         if ("tool".equals(eventName)) {
             ToolData tool = parseEventData(data, ToolData.class);
             if (tool != null) {
@@ -434,6 +440,45 @@ public class AgentClient {
             return true;
         } catch (Exception e) {
             return false;
+        }
+    }
+
+    // ==================== 高危工具审批（短连接，不经 SSE 熔断器） ====================
+
+    /**
+     * 中转用户对高危工具的决策到 agent。
+     * agent 404（条目不存在/非本人）/409（已决策）以 HttpClientErrorException 抛出，
+     * 由调用方映射 HTTP 状态；成功返回 agent 回执（含 tool/conversationId，供 remember 授权）。
+     */
+    public Map<String, Object> decideApproval(String approvalId, String userId,
+                                              boolean approved, boolean remember) {
+        return restClient.post()
+                .uri("/api/agent/approvals/{id}/decision", approvalId)
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(Map.of("userId", userId, "approved", approved, "remember", remember))
+                .retrieve()
+                .body(new org.springframework.core.ParameterizedTypeReference<>() {
+                });
+    }
+
+    /** 拉取 agent 内置技能目录（静态 + mcp:* 动态），agent 不可达时返回 null */
+    public List<Map<String, Object>> listBuiltinSkills() {
+        try {
+            Map<String, Object> resp = metrics.timeAgentCall("listBuiltinSkills", () -> restClient.get()
+                    .uri("/api/agent/skills/catalog")
+                    .retrieve()
+                    .body(new org.springframework.core.ParameterizedTypeReference<Map<String, Object>>() {
+                    }));
+            Object skills = resp == null ? null : resp.get("skills");
+            if (skills instanceof List<?> list) {
+                @SuppressWarnings("unchecked")
+                List<Map<String, Object>> typed = (List<Map<String, Object>>) list;
+                return typed;
+            }
+            return List.of();
+        } catch (Exception e) {
+            log.warn("[AgentClient] 获取内置技能目录失败: {}", e.getMessage());
+            return null;
         }
     }
 

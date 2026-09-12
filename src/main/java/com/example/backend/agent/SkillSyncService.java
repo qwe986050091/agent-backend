@@ -31,6 +31,13 @@ public class SkillSyncService {
     @EventListener(ApplicationReadyEvent.class)
     public void initOnStartup() {
         skillService.ensureBuiltinSkills();
+        // 同步 agent 内置目录（web/http-api/mcp:*）：补齐新技能、清理已下线 MCP server；
+        // agent 不可达时仅 WARN 不阻塞启动（对话时自定义技能解析仍可用静态表）
+        try {
+            skillService.syncBuiltinCatalog();
+        } catch (Exception e) {
+            log.warn("[SkillSync] 内置技能目录同步失败（不影响启动）: {}", e.getMessage());
+        }
         log.info("[SkillSync] 启动初始化完成：内置技能元数据已确保落库（agent 无状态，无需补偿同步）");
     }
 }

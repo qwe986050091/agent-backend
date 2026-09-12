@@ -10,4 +10,7 @@ public interface SkillRepository extends JpaRepository<SkillEntity, Long> {
     Optional<SkillEntity> findByName(String name);
 
     List<SkillEntity> findByBuiltinFalse();
+
+    /** MCP 动态内置技能行（mcp:{server}），启动同步时用于清理已下线 server */
+    List<SkillEntity> findByBuiltinTrueAndNameStartingWith(String prefix);
 }
