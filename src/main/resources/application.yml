@@ -108,6 +108,13 @@ billing:
       input-per-mtok: 1.5
       output-per-mtok: 4.5
 
+# ===== 管理员白名单（P2-11.1 bad case 后台） =====
+# 逗号分隔的用户名（生产由 systemd Environment=APP_ADMIN_USERNAMES 注入）；
+# 留空=无任何管理员，/api/admin/** 一律 403（fail-closed）
+app:
+  admin:
+    usernames: ${APP_ADMIN_USERNAMES:}
+
 # ===== 认证（登录会话 + 失败限流） =====
 auth:
   # 会话有效期（秒）：每次携带有效 token 的请求自动滑动续期；到期后 401 自动跳登录

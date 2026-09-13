@@ -87,6 +87,19 @@ public class BackendMetrics {
         safe(() -> sseActive.addAndGet(delta));
     }
 
+    /**
+     * 记录一次回答反馈提交（P2-11.1）。
+     *
+     * @param outcome up / down / cancel
+     * @param reason  点踩原因码（赞/取消为 null，标签落 none）
+     */
+    public void recordFeedback(String outcome, String reason) {
+        safe(() -> registry.counter("backend.feedback.total",
+                "outcome", tag(outcome),
+                "reason", reason == null || reason.isBlank() ? "none" : tag(reason))
+                .increment());
+    }
+
     /** 熔断状态 Gauge：抓取时实时计算，当前状态输出 1 其余输出 0；附失败率 */
     private void registerCircuitBreakerGauges(CircuitBreaker cb) {
         for (CircuitBreaker.State state : CircuitBreaker.State.values()) {

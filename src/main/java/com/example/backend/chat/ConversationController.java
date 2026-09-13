@@ -1,6 +1,7 @@
 package com.example.backend.chat;
 
 import com.example.backend.auth.AuthInterceptor;
+import com.example.backend.feedback.FeedbackService;
 import com.example.backend.user.UserEntity;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.transaction.Transactional;
@@ -43,13 +44,16 @@ public class ConversationController {
     private final ConversationRepository conversationRepository;
     private final ChatMessageRepository chatMessageRepository;
     private final AgentMemoryRepository agentMemoryRepository;
+    private final FeedbackService feedbackService;
 
     public ConversationController(ConversationRepository conversationRepository,
                                   ChatMessageRepository chatMessageRepository,
-                                  AgentMemoryRepository agentMemoryRepository) {
+                                  AgentMemoryRepository agentMemoryRepository,
+                                  FeedbackService feedbackService) {
         this.conversationRepository = conversationRepository;
         this.chatMessageRepository = chatMessageRepository;
         this.agentMemoryRepository = agentMemoryRepository;
+        this.feedbackService = feedbackService;
     }
 
     /** 会话列表（最近活跃在前；存在历史遗留消息时追加 id=0 默认会话条目） */
@@ -112,6 +116,7 @@ public class ConversationController {
         }
         chatMessageRepository.deleteByUserIdAndConversationId(userId, id);
         agentMemoryRepository.deleteById(new AgentMemoryId(userId, id));
+        feedbackService.deleteForConversation(userId, id);
         conversationRepository.delete(conv);
         log.info("[Conversation] 用户 {} 删除会话 {}（{}）", userId, id, conv.getTitle());
         return ResponseEntity.ok(Map.of("message", "已删除"));

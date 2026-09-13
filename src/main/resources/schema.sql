@@ -158,6 +158,28 @@ CREATE TABLE IF NOT EXISTS rag_recall_record (
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='RAG 召回审计记录表';
 
 -- ============================================================
+-- P2-11.1 回答反馈（点赞/点踩 + bad case）
+-- 反馈以「回合」为粒度：一个用户对一个 traceId 至多一行（再点同一评价=取消）。
+-- trace_id 同时出现在同回合的 user/assistant 两条 chat_message 上，归属校验沿用
+-- existsByTraceIdAndUserId。新表随启动自动创建，无需手工 ALTER。
+-- ============================================================
+CREATE TABLE IF NOT EXISTS message_feedback (
+    id              BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键',
+    trace_id        VARCHAR(64)  NOT NULL COMMENT '被反馈回合的 traceId（=chat_message.trace_id）',
+    user_id         VARCHAR(100) NOT NULL COMMENT '反馈用户（用户名）',
+    conversation_id BIGINT       NOT NULL DEFAULT 0 COMMENT '所属会话（冗余自消息行，便于聚合）',
+    rating          TINYINT      NOT NULL COMMENT '评价：1=赞，-1=踩',
+    reason_code     VARCHAR(50)           DEFAULT NULL COMMENT '点踩原因码（白名单：factual_error/off_topic/incomplete/outdated/tool_error/bad_format/other）',
+    comment         VARCHAR(1000)         DEFAULT NULL COMMENT '用户补充说明（截断 1000）',
+    created_at      DATETIME              DEFAULT NULL COMMENT '首次提交时间',
+    updated_at      DATETIME              DEFAULT NULL COMMENT '最近修改时间',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_feedback_trace_user (trace_id, user_id),
+    KEY idx_feedback_user_created (user_id, created_at),
+    KEY idx_feedback_rating_created (rating, created_at)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='回答反馈（赞/踩）记录表';
+
+-- ============================================================
 -- 手工迁移（CREATE TABLE IF NOT EXISTS 不会给已存在的表加列）：
 -- 本地与生产均需执行一次（P2-10）：
 -- ALTER TABLE chat_message ADD COLUMN trace_id VARCHAR(64) NULL COMMENT '全链路 traceId' AFTER id;

@@ -5,6 +5,8 @@ import com.example.backend.agent.trace.TraceData;
 import com.example.backend.approval.ToolGrantStore;
 import com.example.backend.auth.AuthInterceptor;
 import com.example.backend.common.TraceMdcFilter;
+import com.example.backend.feedback.FeedbackService;
+import com.example.backend.feedback.FeedbackView;
 import com.example.backend.observability.BackendMetrics;
 import com.example.backend.observability.TracePersistenceService;
 import com.example.backend.skill.SkillEntity;
@@ -100,6 +102,7 @@ public class ChatController {
     private final TracePersistenceService tracePersistenceService;
     private final BackendMetrics metrics;
     private final ToolGrantStore toolGrantStore;
+    private final FeedbackService feedbackService;
 
     public ChatController(AgentClient agentClient,
                           ChatMessageRepository chatMessageRepository,
@@ -110,7 +113,8 @@ public class ChatController {
                           ObjectMapper objectMapper,
                           TracePersistenceService tracePersistenceService,
                           BackendMetrics metrics,
-                          ToolGrantStore toolGrantStore) {
+                          ToolGrantStore toolGrantStore,
+                          FeedbackService feedbackService) {
         this.agentClient = agentClient;
         this.chatMessageRepository = chatMessageRepository;
         this.agentMemoryRepository = agentMemoryRepository;
@@ -121,6 +125,7 @@ public class ChatController {
         this.tracePersistenceService = tracePersistenceService;
         this.metrics = metrics;
         this.toolGrantStore = toolGrantStore;
+        this.feedbackService = feedbackService;
     }
 
     /** 解析请求中的会话 id（缺省 0 = 默认/历史会话） */
@@ -326,6 +331,14 @@ public class ChatController {
                 chatMessageRepository.findByUserIdAndConversationIdOrderByCreatedAtAsc(
                         user.getUsername(), conversationId);
 
+        // 批量水合赞/踩状态（单次 IN 查询），历史气泡据此回显已选评价
+        List<String> traceIds = messages.stream()
+                .map(ChatMessageEntity::getTraceId)
+                .filter(t -> t != null && !t.isBlank())
+                .toList();
+        Map<String, FeedbackView> feedbackMap =
+                feedbackService.viewByTraceIds(user.getUsername(), traceIds);
+
         List<Map<String, Object>> list = messages.stream().map(m -> {
             Map<String, Object> item = new HashMap<>();
             item.put("role", m.getRole());
@@ -333,6 +346,8 @@ public class ChatController {
             item.put("createdAt", m.getCreatedAt());
             // traceId 仅助手消息用于历史 trace 懒加载（用户消息/历史数据可能为 null）
             item.put("traceId", m.getTraceId());
+            // 本回合反馈（赞/踩 + 原因 + 备注）；无反馈为 null
+            item.put("feedback", m.getTraceId() == null ? null : feedbackMap.get(m.getTraceId()));
             return item;
         }).toList();
 

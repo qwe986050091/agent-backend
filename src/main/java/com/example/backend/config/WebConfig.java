@@ -13,9 +13,11 @@ import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 public class WebConfig implements WebMvcConfigurer {
 
     private final AuthInterceptor authInterceptor;
+    private final AdminInterceptor adminInterceptor;
 
-    public WebConfig(AuthInterceptor authInterceptor) {
+    public WebConfig(AuthInterceptor authInterceptor, AdminInterceptor adminInterceptor) {
         this.authInterceptor = authInterceptor;
+        this.adminInterceptor = adminInterceptor;
     }
 
     @Override
@@ -35,9 +37,13 @@ public class WebConfig implements WebMvcConfigurer {
 
     @Override
     public void addInterceptors(InterceptorRegistry registry) {
-        // 对话、会话管理、Skill 管理、知识库接口必须登录；/api/auth/** 与 /api/health 放行
+        // 对话、会话管理、Skill 管理、知识库、反馈、管理后台接口必须登录；
+        // /api/auth/** 与 /api/health 放行
         registry.addInterceptor(authInterceptor)
                 .addPathPatterns("/api/chat/**", "/api/conversations/**", "/api/skills/**",
-                        "/api/knowledge/**", "/api/usage/**");
+                        "/api/knowledge/**", "/api/usage/**", "/api/feedback/**", "/api/admin/**");
+        // 管理员白名单二次校验（注册顺序在后：先登录鉴权放入用户，再判管理员）
+        registry.addInterceptor(adminInterceptor)
+                .addPathPatterns("/api/admin/**");
     }
 }

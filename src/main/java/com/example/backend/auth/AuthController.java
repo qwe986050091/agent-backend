@@ -1,5 +1,6 @@
 package com.example.backend.auth;
 
+import com.example.backend.config.AdminProperties;
 import com.example.backend.user.UserEntity;
 import com.example.backend.user.UserRepository;
 import jakarta.servlet.http.HttpServletRequest;
@@ -32,11 +33,14 @@ public class AuthController {
     private final PasswordEncoder passwordEncoder = new BCryptPasswordEncoder();
     private final SessionStore sessionStore;
     private final LoginRateLimiter rateLimiter;
+    private final AdminProperties adminProperties;
 
-    public AuthController(UserRepository userRepository, SessionStore sessionStore, LoginRateLimiter rateLimiter) {
+    public AuthController(UserRepository userRepository, SessionStore sessionStore,
+                          LoginRateLimiter rateLimiter, AdminProperties adminProperties) {
         this.userRepository = userRepository;
         this.sessionStore = sessionStore;
         this.rateLimiter = rateLimiter;
+        this.adminProperties = adminProperties;
     }
 
     /** 注册（注册成功即自动登录，返回 token） */
@@ -159,11 +163,13 @@ public class AuthController {
         return m;
     }
 
-    private static Map<String, Object> authResponse(UserEntity user, String token) {
+    private Map<String, Object> authResponse(UserEntity user, String token) {
         Map<String, Object> data = new HashMap<>();
         data.put("token", token);
         data.put("username", user.getUsername());
         data.put("nickname", user.getNickname());
+        // 管理员标志驱动前端「反馈管理」菜单显隐；真正鉴权在 AdminInterceptor 服务端兜底
+        data.put("admin", adminProperties.isAdmin(user.getUsername()));
         return data;
     }
 

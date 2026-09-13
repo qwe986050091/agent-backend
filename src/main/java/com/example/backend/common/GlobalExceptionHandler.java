@@ -24,6 +24,14 @@ public class GlobalExceptionHandler {
                 .body(Map.of("code", "BAD_REQUEST", "message", e.getMessage()));
     }
 
+    /** 反馈目标不存在或不属于当前用户（P2-11.1） */
+    @ExceptionHandler(com.example.backend.feedback.FeedbackTraceNotFoundException.class)
+    public ResponseEntity<Map<String, Object>> handleFeedbackTraceNotFound(
+            com.example.backend.feedback.FeedbackTraceNotFoundException e) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                .body(Map.of("code", "FEEDBACK_TRACE_NOT_FOUND", "message", e.getMessage()));
+    }
+
     /** 兜底：未预期异常 */
     @ExceptionHandler(Exception.class)
     public ResponseEntity<Map<String, Object>> handleException(Exception e) {
