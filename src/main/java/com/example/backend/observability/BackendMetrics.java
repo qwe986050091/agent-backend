@@ -44,6 +44,7 @@ public class BackendMetrics {
             }
             Timer.builder("backend.chat.duration")
                     .tags("mode", tag(mode), "outcome", tag(outcome))
+                    .publishPercentileHistogram(true)
                     .register(registry)
                     .record(durationMs, TimeUnit.MILLISECONDS);
         });
@@ -78,6 +79,7 @@ public class BackendMetrics {
             }
             Timer.builder("backend.agent.http.duration")
                     .tags("api", tag(api), "outcome", tag(outcome))
+                    .publishPercentileHistogram(true)
                     .register(registry)
                     .record(durationMs, TimeUnit.MILLISECONDS);
         });
