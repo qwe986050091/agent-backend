@@ -48,6 +48,14 @@ public class RagRecallRecordEntity {
     @Column(nullable = false)
     private Double score = 0d;
 
+    /** 命中通道：vector / keyword / both（混合检索，P1-9.3；历史行/miss 行为 null） */
+    @Column(length = 10)
+    private String channel;
+
+    /** Rerank 精排 raw logit（P1-9.3；未启用精排时为 null） */
+    @Column(name = "rerank_score")
+    private Double rerankScore;
+
     @Column(nullable = false)
     private Integer seq = 0;
 
@@ -81,6 +89,10 @@ public class RagRecallRecordEntity {
     public void setSegmentText(String segmentText) { this.segmentText = segmentText; }
     public Double getScore() { return score; }
     public void setScore(Double score) { this.score = score; }
+    public String getChannel() { return channel; }
+    public void setChannel(String channel) { this.channel = channel; }
+    public Double getRerankScore() { return rerankScore; }
+    public void setRerankScore(Double rerankScore) { this.rerankScore = rerankScore; }
     public Integer getSeq() { return seq; }
     public void setSeq(Integer seq) { this.seq = seq; }
     public LocalDateTime getCreatedAt() { return createdAt; }

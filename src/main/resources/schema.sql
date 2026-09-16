@@ -150,6 +150,8 @@ CREATE TABLE IF NOT EXISTS rag_recall_record (
     source_type     VARCHAR(20)           DEFAULT NULL COMMENT '来源类型 document/conversation',
     segment_text    TEXT                  DEFAULT NULL COMMENT '召回片段文本（截断 100）',
     score           DOUBLE       NOT NULL DEFAULT 0 COMMENT '向量相似度分数',
+    channel         VARCHAR(10)           DEFAULT NULL COMMENT '命中通道 vector/keyword/both（P1-9.3）',
+    rerank_score    DOUBLE                DEFAULT NULL COMMENT 'Rerank 精排 raw logit（P1-9.3）',
     seq             INT          NOT NULL DEFAULT 0 COMMENT '片段在本次检索中的序号',
     created_at      DATETIME              DEFAULT NULL COMMENT '创建时间',
     PRIMARY KEY (id),

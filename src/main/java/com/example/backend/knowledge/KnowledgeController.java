@@ -3,6 +3,7 @@ package com.example.backend.knowledge;
 import com.example.backend.agent.AgentClient;
 import com.example.backend.auth.AuthInterceptor;
 import com.example.backend.user.UserEntity;
+import com.fasterxml.jackson.databind.JsonNode;
 import jakarta.servlet.http.HttpServletRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -16,6 +17,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.nio.charset.StandardCharsets;
@@ -28,7 +30,8 @@ import java.util.UUID;
 /**
  * 知识库接口（需登录）
  *
- *   POST   /api/knowledge/upload          上传文档（.txt/.md/.text），切块向量化存入 agent
+ *   POST   /api/knowledge/upload          上传文档（txt/md 纯文本 或 PDF/Office/HTML 二进制），
+ *                                         切块向量化存入 agent（二进制由 agent 侧 Tika 抽正文）
  *   GET    /api/knowledge/documents       当前用户的文档列表
  *   DELETE /api/knowledge/documents/{id}  删除文档元数据
  *
@@ -41,8 +44,15 @@ public class KnowledgeController {
 
     private static final Logger log = LoggerFactory.getLogger(KnowledgeController.class);
 
-    /** 当前支持的文档类型（纯文本；PDF/Word 暂不支持） */
-    private static final Set<String> ALLOWED_EXTENSIONS = Set.of("txt", "md", "text", "markdown");
+    /** 纯文本格式：backend 直接 UTF-8 解码走 JSON 索引 */
+    private static final Set<String> TEXT_EXTENSIONS = Set.of("txt", "md", "text", "markdown");
+    /** 二进制格式：原始字节 multipart 转发 agent，由 Tika 抽取正文（P1-9.2） */
+    private static final Set<String> BINARY_EXTENSIONS = Set.of(
+            "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "html", "htm");
+    /** 当前允许上传的全部文档类型（纯文本 + 二进制） */
+    private static final Set<String> ALLOWED_EXTENSIONS =
+            java.util.stream.Stream.concat(TEXT_EXTENSIONS.stream(), BINARY_EXTENSIONS.stream())
+                    .collect(java.util.stream.Collectors.toUnmodifiableSet());
 
     private final AgentClient agentClient;
     private final KnowledgeDocumentRepository repository;
@@ -65,26 +75,40 @@ public class KnowledgeController {
         String ext = extensionOf(originalName);
         if (!ALLOWED_EXTENSIONS.contains(ext)) {
             return ResponseEntity.badRequest()
-                    .body(error("UNSUPPORTED_TYPE", "仅支持 .txt/.md 文本文件，当前文件: " + originalName));
-        }
-
-        String text;
-        try {
-            text = new String(file.getBytes(), StandardCharsets.UTF_8);
-        } catch (Exception e) {
-            return ResponseEntity.badRequest().body(error("READ_FAILED", "文件读取失败: " + e.getMessage()));
-        }
-        if (text.isBlank()) {
-            return ResponseEntity.badRequest().body(error("EMPTY_DOC", "文档内容为空"));
+                    .body(error("UNSUPPORTED_TYPE",
+                            "仅支持 txt/md/pdf/Word/Excel/PPT/HTML 文件，当前文件: " + originalName));
         }
 
         String username = user.getUsername();
         String docId = UUID.randomUUID().toString().replace("-", "");
 
-        // 调 agent 切块 + 向量化；失败则不落库
+        // 调 agent 切块 + 向量化；失败则不落库。
+        // 纯文本走 JSON 接口（backend 直接解码）；二进制走 multipart 接口（agent Tika 抽正文）
         int chunks;
         try {
-            chunks = agentClient.indexDocument(username, docId, originalName, text);
+            if (TEXT_EXTENSIONS.contains(ext)) {
+                String text;
+                try {
+                    text = new String(file.getBytes(), StandardCharsets.UTF_8);
+                } catch (Exception e) {
+                    return ResponseEntity.badRequest()
+                            .body(error("READ_FAILED", "文件读取失败: " + e.getMessage()));
+                }
+                if (text.isBlank()) {
+                    return ResponseEntity.badRequest().body(error("EMPTY_DOC", "文档内容为空"));
+                }
+                chunks = agentClient.indexDocument(username, docId, originalName, text);
+            } else {
+                chunks = agentClient.indexDocumentFile(
+                        username, docId, originalName, originalName, file.getBytes());
+            }
+        } catch (HttpClientErrorException e) {
+            // agent 侧 4xx：文档不支持/加密/损坏/空文本/超限(422)、文件超 20MB(413) 等，
+            // 原样透传状态码与可读原因，用户可处理后重试；4xx 不顶开 agent 熔断器
+            log.info("[Knowledge] agent 拒绝文档《{}》: {} {}", originalName,
+                    e.getStatusCode().value(), e.getResponseBodyAsString());
+            return ResponseEntity.status(e.getStatusCode())
+                    .body(error(agentErrorCode(e), agentErrorMessage(e)));
         } catch (Exception e) {
             log.warn("[Knowledge] 文档索引到 agent 失败: {}", e.getMessage());
             return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
@@ -162,5 +186,31 @@ public class KnowledgeController {
         m.put("code", code);
         m.put("message", message);
         return m;
+    }
+
+    /** 从 agent 的错误响应体（{code,message} JSON）提取原因码，失败时给通用码 */
+    private String agentErrorCode(HttpClientErrorException e) {
+        return extractAgentField(e, "code", "AGENT_REJECTED");
+    }
+
+    /** 从 agent 的错误响应体提取可读原因，失败时用状态文本兜底 */
+    private String agentErrorMessage(HttpClientErrorException e) {
+        return extractAgentField(e, "message", "文档被 Agent 拒绝（HTTP " + e.getStatusCode().value() + "）");
+    }
+
+    private String extractAgentField(HttpClientErrorException e, String field, String fallback) {
+        try {
+            String body = e.getResponseBodyAsString();
+            if (body != null && !body.isBlank()) {
+                JsonNode node = new com.fasterxml.jackson.databind.ObjectMapper().readTree(body);
+                JsonNode value = node.get(field);
+                if (value != null && !value.asText().isBlank()) {
+                    return value.asText();
+                }
+            }
+        } catch (Exception ignored) {
+            // agent 响应非 JSON，走兜底
+        }
+        return fallback;
     }
 }

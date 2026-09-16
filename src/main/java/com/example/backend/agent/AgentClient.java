@@ -508,6 +508,47 @@ public class AgentClient {
         return supplier.get();
     }
 
+    /**
+     * 以 multipart 转发一个二进制文档到 agent 侧索引（PDF/Word/Excel/PPT/HTML，P1-9.2）。
+     * agent 负责 Tika 抽正文 + 切块 + 向量化。
+     *
+     * @param fileName 原始文件名（带后缀，供 agent Tika 探测格式）
+     * @return 切块数量
+     * @throws org.springframework.web.client.HttpClientErrorException agent 返回 4xx 时抛出
+     *         （422=文档不受支持/加密/损坏/正文超限；413=超 20MB；消息体含可读原因），
+     *         熔断器已配置忽略 HttpClientErrorException，不会顶开熔断
+     */
+    public int indexDocumentFile(String userId, String docId, String name,
+                                 String fileName, byte[] content) {
+        // ByteArrayResource 匿名子类重写 getFilename：multipart 才能带上文件名（Tika 靠后缀探测）
+        org.springframework.core.io.ByteArrayResource fileResource =
+                new org.springframework.core.io.ByteArrayResource(content == null ? new byte[0] : content) {
+                    @Override
+                    public String getFilename() {
+                        return fileName;
+                    }
+                };
+        org.springframework.util.MultiValueMap<String, Object> form =
+                new org.springframework.util.LinkedMultiValueMap<>();
+        form.add("userId", userId);
+        form.add("docId", docId);
+        form.add("name", name == null ? "" : name);
+        form.add("file", fileResource);
+
+        Supplier<Integer> supplier = CircuitBreaker.decorateSupplier(circuitBreaker,
+                () -> metrics.timeAgentCall("indexDocumentFile", () -> {
+                    Map<String, Object> resp = restClient.post()
+                            .uri("/api/agent/rag/index-file")
+                            .contentType(MediaType.MULTIPART_FORM_DATA)
+                            .body(form)
+                            .retrieve()
+                            .body(Map.class);
+                    Object chunks = resp == null ? null : resp.get("chunks");
+                    return chunks instanceof Number n ? n.intValue() : 0;
+                }));
+        return supplier.get();
+    }
+
     /** 索引一条对话消息到 agent 侧向量库（跨会话长期记忆）；仅过熔断器，异常由调用方 best-effort 处理 */
     public void indexConversation(String userId, String role, String content) {
         Supplier<Object> guarded = CircuitBreaker.decorateSupplier(circuitBreaker,

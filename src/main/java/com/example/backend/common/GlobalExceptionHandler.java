@@ -32,6 +32,14 @@ public class GlobalExceptionHandler {
                 .body(Map.of("code", "FEEDBACK_TRACE_NOT_FOUND", "message", e.getMessage()));
     }
 
+    /** 上传文件超过 multipart 大小上限（P1-9.2：知识库文档 20MB） */
+    @ExceptionHandler(org.springframework.web.multipart.MaxUploadSizeExceededException.class)
+    public ResponseEntity<Map<String, Object>> handleMaxUploadSize(
+            org.springframework.web.multipart.MaxUploadSizeExceededException e) {
+        return ResponseEntity.status(HttpStatus.PAYLOAD_TOO_LARGE)
+                .body(Map.of("code", "FILE_TOO_LARGE", "message", "文件超过 20MB 大小上限"));
+    }
+
     /** 兜底：未预期异常 */
     @ExceptionHandler(Exception.class)
     public ResponseEntity<Map<String, Object>> handleException(Exception e) {

@@ -180,6 +180,8 @@ public class TracePersistenceService {
                 row.setSourceType(seg.type());
                 row.setSegmentText(seg.text());
                 row.setScore(seg.score());
+                row.setChannel(seg.channel());
+                row.setRerankScore(seg.rerankScore());
                 row.setSeq(seq++);
                 row.setCreatedAt(LocalDateTime.now());
                 ragRepository.save(row);

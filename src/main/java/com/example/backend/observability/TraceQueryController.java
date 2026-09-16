@@ -72,7 +72,8 @@ public class TraceQueryController {
             if (!missRow) {
                 segments.add(new RagSegmentData(
                         r.getDocId(), r.getSourceName(), r.getSourceType(), r.getSegmentText(),
-                        r.getScore() == null ? 0d : r.getScore()));
+                        r.getScore() == null ? 0d : r.getScore(),
+                        r.getChannel(), r.getRerankScore()));
             }
         }
         List<RagData> recalls = new ArrayList<>();

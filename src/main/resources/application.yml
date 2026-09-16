@@ -56,11 +56,11 @@ spring:
       password: ${REDIS_PASSWORD:}
       timeout: 2s
 
-  # Skill 文件上传大小限制
+  # 文件上传大小限制：Skill 上传 + 知识库文档（P1-9.2 起支持 PDF/Office，最大 20MB）
   servlet:
     multipart:
-      max-file-size: 5MB
-      max-request-size: 5MB
+      max-file-size: 20MB
+      max-request-size: 22MB
 
 # ===== Agent 服务（d:\code\agent 工程，LangChain4j） =====
 agent:
