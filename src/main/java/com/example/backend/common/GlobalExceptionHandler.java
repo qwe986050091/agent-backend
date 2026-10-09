@@ -32,6 +32,16 @@ public class GlobalExceptionHandler {
                 .body(Map.of("code", "FEEDBACK_TRACE_NOT_FOUND", "message", e.getMessage()));
     }
 
+    /** 对话图片校验失败（P1-8 多模态）：超量 413，其余（格式/数据非法）400 */
+    @ExceptionHandler(com.example.backend.chat.ChatImageValidator.ChatImageRejectedException.class)
+    public ResponseEntity<Map<String, Object>> handleChatImageRejected(
+            com.example.backend.chat.ChatImageValidator.ChatImageRejectedException e) {
+        HttpStatus status = "IMAGE_TOO_LARGE".equals(e.code())
+                ? HttpStatus.PAYLOAD_TOO_LARGE : HttpStatus.BAD_REQUEST;
+        return ResponseEntity.status(status)
+                .body(Map.of("code", e.code(), "message", e.getMessage()));
+    }
+
     /** 上传文件超过 multipart 大小上限（P1-9.2：知识库文档 20MB） */
     @ExceptionHandler(org.springframework.web.multipart.MaxUploadSizeExceededException.class)
     public ResponseEntity<Map<String, Object>> handleMaxUploadSize(

@@ -1,6 +1,7 @@
 package com.example.backend.config;
 
 import com.example.backend.auth.AuthInterceptor;
+import com.example.backend.ratelimit.RateLimitInterceptor;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.web.servlet.config.annotation.CorsRegistry;
 import org.springframework.web.servlet.config.annotation.InterceptorRegistry;
@@ -14,10 +15,13 @@ public class WebConfig implements WebMvcConfigurer {
 
     private final AuthInterceptor authInterceptor;
     private final AdminInterceptor adminInterceptor;
+    private final RateLimitInterceptor rateLimitInterceptor;
 
-    public WebConfig(AuthInterceptor authInterceptor, AdminInterceptor adminInterceptor) {
+    public WebConfig(AuthInterceptor authInterceptor, AdminInterceptor adminInterceptor,
+                     RateLimitInterceptor rateLimitInterceptor) {
         this.authInterceptor = authInterceptor;
         this.adminInterceptor = adminInterceptor;
+        this.rateLimitInterceptor = rateLimitInterceptor;
     }
 
     @Override
@@ -42,6 +46,10 @@ public class WebConfig implements WebMvcConfigurer {
         registry.addInterceptor(authInterceptor)
                 .addPathPatterns("/api/chat/**", "/api/conversations/**", "/api/skills/**",
                         "/api/knowledge/**", "/api/usage/**", "/api/feedback/**", "/api/admin/**");
+        // 对话入口用户级限流（频率/在途并发/日 token 预算）；仅占回合的两个发消息接口，
+        // 不含 history 等只读接口。注册顺序在鉴权之后：preHandle 必能取到当前用户
+        registry.addInterceptor(rateLimitInterceptor)
+                .addPathPatterns("/api/chat", "/api/chat/stream");
         // 管理员白名单二次校验（注册顺序在后：先登录鉴权放入用户，再判管理员）
         registry.addInterceptor(adminInterceptor)
                 .addPathPatterns("/api/admin/**");

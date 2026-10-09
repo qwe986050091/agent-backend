@@ -114,6 +114,23 @@ billing:
 app:
   admin:
     usernames: ${APP_ADMIN_USERNAMES:}
+  # ===== 对话图片（P1-8 多模态，deepseek-flash 原生视觉） =====
+  chat:
+    image:
+      enabled: ${CHAT_IMAGE_ENABLED:true}
+      max-count: 3                                           # 单条消息图片数
+      max-size-bytes: ${CHAT_IMAGE_MAX_SIZE:5242880}         # 单图原始字节 ≤5MB（3 张 base64 ≈20MB，nginx 25m 内）
+      dir: ${CHAT_IMAGE_DIR:data/chat-images}                # 落盘目录（生产 /opt/agent-data/chat-images）
+
+# ===== 用户级限流与配额（P0-4：防死循环 prompt / 被盗会话无上限烧 token） =====
+# 三道闸门均按用户名维度；任一阈值置 0 = 关闭该闸门。生产阈值经 systemd Environment 注入。
+ratelimit:
+  enabled: ${RATELIMIT_ENABLED:true}
+  requests-per-minute: ${RATELIMIT_REQUESTS_PER_MINUTE:20}   # 每用户每分钟最多发起的回合数
+  max-concurrent: ${RATELIMIT_MAX_CONCURRENT:4}              # 每用户同时在途对话（同步调用 + SSE）
+  daily-token-budget: ${RATELIMIT_DAILY_TOKEN_BUDGET:2000000} # 每用户每日 token 上限，0=不限
+  concurrent-ttl-seconds: 360                                # 在途键兜底 TTL，必须 > SSE 超时 5 分钟
+  exempt-admins: true                                        # 管理员白名单豁免
 
 # ===== 认证（登录会话 + 失败限流） =====
 auth:

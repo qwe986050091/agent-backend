@@ -45,15 +45,18 @@ public class ConversationController {
     private final ChatMessageRepository chatMessageRepository;
     private final AgentMemoryRepository agentMemoryRepository;
     private final FeedbackService feedbackService;
+    private final ChatAttachmentService attachmentService;
 
     public ConversationController(ConversationRepository conversationRepository,
                                   ChatMessageRepository chatMessageRepository,
                                   AgentMemoryRepository agentMemoryRepository,
-                                  FeedbackService feedbackService) {
+                                  FeedbackService feedbackService,
+                                  ChatAttachmentService attachmentService) {
         this.conversationRepository = conversationRepository;
         this.chatMessageRepository = chatMessageRepository;
         this.agentMemoryRepository = agentMemoryRepository;
         this.feedbackService = feedbackService;
+        this.attachmentService = attachmentService;
     }
 
     /** 会话列表（最近活跃在前；存在历史遗留消息时追加 id=0 默认会话条目） */
@@ -113,6 +116,12 @@ public class ConversationController {
         ConversationEntity conv = conversationRepository.findById(id).orElse(null);
         if (conv == null || !conv.getUserId().equals(userId)) {
             return ResponseEntity.notFound().build();
+        }
+        // P1-8：先删图片附件（磁盘文件 + 元数据），再删消息行
+        List<ChatMessageEntity> messages =
+                chatMessageRepository.findByUserIdAndConversationIdOrderByCreatedAtAsc(userId, id);
+        if (!messages.isEmpty()) {
+            attachmentService.deleteForMessages(messages.stream().map(ChatMessageEntity::getId).toList());
         }
         chatMessageRepository.deleteByUserIdAndConversationId(userId, id);
         agentMemoryRepository.deleteById(new AgentMemoryId(userId, id));

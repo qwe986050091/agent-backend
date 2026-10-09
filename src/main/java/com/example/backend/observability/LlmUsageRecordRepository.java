@@ -14,6 +14,17 @@ public interface LlmUsageRecordRepository extends JpaRepository<LlmUsageRecordEn
     /** 同一 traceId 至多一行（取消/错误兜底落库前去重用） */
     boolean existsByTraceId(String traceId);
 
+    /**
+     * 统计某用户自指定时间起（日预算场景传当天 00:00）的 total_tokens 合计。
+     * 命中索引 idx_usage_user_created(user_id, created_at)，仅放行路径每回合一次轻量聚合。
+     */
+    @Query("""
+            select coalesce(sum(u.totalTokens), 0)
+            from LlmUsageRecordEntity u
+            where u.userId = :userId and u.createdAt >= :from
+            """)
+    Long sumTotalTokensSince(@Param("userId") String userId, @Param("from") LocalDateTime from);
+
     Optional<LlmUsageRecordEntity> findByTraceId(String traceId);
 
     /** 总量聚合投影（Hibernate 对 Object[] 多聚合列在部分版本会拆成单值，用接口投影最稳） */

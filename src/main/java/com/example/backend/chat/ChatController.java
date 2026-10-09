@@ -103,6 +103,8 @@ public class ChatController {
     private final BackendMetrics metrics;
     private final ToolGrantStore toolGrantStore;
     private final FeedbackService feedbackService;
+    private final ChatImageValidator imageValidator;
+    private final ChatAttachmentService attachmentService;
 
     public ChatController(AgentClient agentClient,
                           ChatMessageRepository chatMessageRepository,
@@ -114,7 +116,9 @@ public class ChatController {
                           TracePersistenceService tracePersistenceService,
                           BackendMetrics metrics,
                           ToolGrantStore toolGrantStore,
-                          FeedbackService feedbackService) {
+                          FeedbackService feedbackService,
+                          ChatImageValidator imageValidator,
+                          ChatAttachmentService attachmentService) {
         this.agentClient = agentClient;
         this.chatMessageRepository = chatMessageRepository;
         this.agentMemoryRepository = agentMemoryRepository;
@@ -126,15 +130,22 @@ public class ChatController {
         this.metrics = metrics;
         this.toolGrantStore = toolGrantStore;
         this.feedbackService = feedbackService;
+        this.imageValidator = imageValidator;
+        this.attachmentService = attachmentService;
+    }
+
+    /** 纯图片回合发给 agent 的兜底文案（DeepSeek 要求 content 块里文本可空，这里给模型明确指令） */
+    private static String imageOnlyPrompt(int imageCount) {
+        return "（用户发送了 " + imageCount + " 张图片，未附文字说明）请查看图片内容并给出简洁回应。";
     }
 
     /** 解析请求中的会话 id（缺省 0 = 默认/历史会话） */
-    private static Long conversationIdOf(Map<String, String> body) {
+    private static Long conversationIdOf(ChatSendRequest body) {
         if (body == null) {
             return ConversationController.DEFAULT_CONVERSATION_ID;
         }
         try {
-            String raw = body.get("conversationId");
+            String raw = body.conversationId();
             return raw == null || raw.isBlank() ? ConversationController.DEFAULT_CONVERSATION_ID : Long.valueOf(raw.trim());
         } catch (NumberFormatException e) {
             return ConversationController.DEFAULT_CONVERSATION_ID;
@@ -143,14 +154,22 @@ public class ChatController {
 
     @PostMapping
     @Transactional
-    public ResponseEntity<?> chat(HttpServletRequest request, @RequestBody Map<String, String> body) {
+    public ResponseEntity<?> chat(HttpServletRequest request, @RequestBody(required = false) ChatSendRequest body) {
         UserEntity user = (UserEntity) request.getAttribute(AuthInterceptor.CURRENT_USER_ATTR);
-        String message = body == null ? null : body.get("message");
+        if (body == null) {
+            return ResponseEntity.badRequest()
+                    .body(Map.of("code", "BAD_REQUEST", "message", "请求体为空"));
+        }
 
-        if (message == null || message.trim().isEmpty()) {
+        // 图片先校验（magic bytes/大小/数量；非法直接 400/413，不写任何数据）
+        List<ChatImageValidator.ValidImage> validImages = imageValidator.validate(body.images());
+        String rawText = body.message() == null ? "" : body.message().trim();
+        if (rawText.isEmpty() && validImages.isEmpty()) {
             return ResponseEntity.badRequest()
                     .body(Map.of("code", "EMPTY_MESSAGE", "message", "消息内容不能为空"));
         }
+        // 纯图片回合：库存原文为空（UI 只显示图片），发给 agent 的文本用兜底指令
+        String effectiveText = rawText.isEmpty() ? imageOnlyPrompt(validImages.size()) : rawText;
 
         String userId = user.getUsername();
         Long conversationId = conversationIdOf(body);
@@ -158,10 +177,11 @@ public class ChatController {
         long start = System.nanoTime();
 
         // 1. 先组装状态（必须在保存当前消息之前，否则当前消息会被当成历史重复下发）
-        AgentClient.AgentChatPayload payload = buildPayload(userId, conversationId, message);
+        AgentClient.AgentChatPayload payload = buildPayload(userId, conversationId, effectiveText);
 
-        // 2. 保存用户消息
-        saveMessage(userId, conversationId, "user", message, traceId);
+        // 2. 保存用户消息（纯图片回合 content 为空串）+ 图片附件落盘/落库，当前图片并入 payload
+        ChatMessageEntity userMessage = saveMessage(userId, conversationId, "user", rawText, traceId);
+        payload = attachCurrentImages(payload, userId, userMessage.getId(), validImages);
 
         // 3. HTTP 调用 agent 工程（含重试/熔断；失败或熔断中返回 503 友好降级）
         AgentClient.AgentChatResult result;
@@ -198,9 +218,20 @@ public class ChatController {
      * 流式对话（SSE）：逐 token 转发给前端，流结束后把完整回复与最新摘要落库
      */
     @PostMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public SseEmitter chatStream(HttpServletRequest request, @RequestBody Map<String, String> body) {
+    public SseEmitter chatStream(HttpServletRequest request, @RequestBody(required = false) ChatSendRequest body) {
         UserEntity user = (UserEntity) request.getAttribute(AuthInterceptor.CURRENT_USER_ATTR);
-        String message = body == null ? null : body.get("message");
+        if (body == null) {
+            throw new IllegalArgumentException("请求体为空");
+        }
+
+        // 以下校验均在创建 emitter 之前抛异常 → 走全局异常处理返回 400/413 JSON，前端按普通 HTTP 错误处理
+        List<ChatImageValidator.ValidImage> validImages = imageValidator.validate(body.images());
+        String rawTextStream = body.message() == null ? "" : body.message().trim();
+        if (rawTextStream.isEmpty() && validImages.isEmpty()) {
+            throw new IllegalArgumentException("消息内容不能为空");
+        }
+        String effectiveText = rawTextStream.isEmpty()
+                ? imageOnlyPrompt(validImages.size()) : rawTextStream;
 
         // 回合开始即计时；outcome 指标全路径只记一次（超时/断开/成功/失败回调可能重入）
         long streamStart = System.nanoTime();
@@ -232,20 +263,17 @@ public class ChatController {
             closeAgentStream(agentBodyRef);
         });
 
-        if (message == null || message.trim().isEmpty()) {
-            emitter.completeWithError(new IllegalArgumentException("消息内容不能为空"));
-            return emitter;
-        }
-
         String userId = user.getUsername();
         Long conversationId = conversationIdOf(body);
         String traceId = traceIdOf(request);
 
-        // 1. 先组装状态（在保存当前消息之前）
-        AgentClient.AgentChatPayload payload = buildPayload(userId, conversationId, message);
+        // 1. 先组装状态（在保存当前消息之前；纯图片回合发给 agent 的是兜底指令文本）
+        AgentClient.AgentChatPayload payloadBase = buildPayload(userId, conversationId, effectiveText);
 
-        // 2. 用户消息先落库（带 traceId）
-        saveMessage(userId, conversationId, "user", message, traceId);
+        // 2. 用户消息先落库（带 traceId；纯图片回合 content 为空串）+ 附件落盘并把当前图片并入 payload
+        ChatMessageEntity userMessage = saveMessage(userId, conversationId, "user", rawTextStream, traceId);
+        final AgentClient.AgentChatPayload payload =
+                attachCurrentImages(payloadBase, userId, userMessage.getId(), validImages);
 
         try {
             metrics.changeSseActive(+1);
@@ -339,6 +367,11 @@ public class ChatController {
         Map<String, FeedbackView> feedbackMap =
                 feedbackService.viewByTraceIds(user.getUsername(), traceIds);
 
+        // 批量水合图片附件（P1-8，仅元数据；字节走 GET /api/chat/attachments/{id} 鉴权拉取）
+        Map<Long, List<ChatAttachmentService.LoadedAttachment>> attachmentMap =
+                attachmentService.loadForMessages(
+                        messages.stream().map(ChatMessageEntity::getId).toList(), false);
+
         List<Map<String, Object>> list = messages.stream().map(m -> {
             Map<String, Object> item = new HashMap<>();
             item.put("role", m.getRole());
@@ -348,10 +381,47 @@ public class ChatController {
             item.put("traceId", m.getTraceId());
             // 本回合反馈（赞/踩 + 原因 + 备注）；无反馈为 null
             item.put("feedback", m.getTraceId() == null ? null : feedbackMap.get(m.getTraceId()));
+            // 本消息图片附件（仅 user 消息可能有），无则空数组
+            List<Map<String, Object>> atts = attachmentMap
+                    .getOrDefault(m.getId(), List.of()).stream()
+                    .map(a -> {
+                        Map<String, Object> view = new HashMap<>();
+                        view.put("id", a.id());
+                        // 字段名与发送入参/agent 协议统一为 mimeType（勿写 mediaType，前端绑不上）
+                        view.put("mimeType", a.mediaType());
+                        return view;
+                    }).toList();
+            item.put("attachments", atts);
             return item;
         }).toList();
 
         return ResponseEntity.ok(Map.of("messages", list));
+    }
+
+    /**
+     * 鉴权读取图片附件字节（P1-8）。
+     * <img> 无法带 Authorization 头，前端以 fetch+Blob 方式调用；接口本身仍在登录拦截范围内，
+     * 且二次校验附件归属（只能取本人图片）。
+     */
+    @GetMapping("/attachments/{id}")
+    public ResponseEntity<byte[]> getAttachment(HttpServletRequest request,
+                                                @org.springframework.web.bind.annotation.PathVariable Long id) {
+        String userId = ((UserEntity) request.getAttribute(AuthInterceptor.CURRENT_USER_ATTR)).getUsername();
+        ChatAttachmentEntity entity = attachmentService.findOwned(id, userId);
+        if (entity == null) {
+            return ResponseEntity.notFound().build();
+        }
+        try {
+            byte[] bytes = attachmentService.readBytes(entity);
+            return ResponseEntity.ok()
+                    .contentType(MediaType.parseMediaType(entity.getMediaType()))
+                    // 私人图片：允许前端/CDN 短时缓存，禁止中间人之外的共享缓存
+                    .header(org.springframework.http.HttpHeaders.CACHE_CONTROL, "private, max-age=3600")
+                    .body(bytes);
+        } catch (java.io.IOException e) {
+            log.warn("[Chat] 附件 {} 读取失败: {}", id, e.getMessage());
+            return ResponseEntity.status(HttpStatus.GONE).build();
+        }
     }
 
     // ==================== 无状态 payload 组装 ====================
@@ -374,18 +444,55 @@ public class ChatController {
                 history, skills, allowedTools);
     }
 
-    /** 最近 {@link #HISTORY_LIMIT} 条会话历史消息（反转为时间升序） */
+    /**
+     * 最近 {@link #HISTORY_LIMIT} 条会话历史消息（反转为时间升序）。
+     * user 消息携带的图片从磁盘读取并 base64 一并下发（多轮看图对话需要原图在上下文中）。
+     */
     private List<AgentClient.AgentChatMessage> recentHistory(String userId, Long conversationId) {
         List<ChatMessageEntity> recentDesc =
                 chatMessageRepository.findTop30ByUserIdAndConversationIdOrderByIdDesc(userId, conversationId);
         if (recentDesc.isEmpty()) {
             return List.of();
         }
+        // 批量加载这批消息的附件（含字节/base64），按 messageId 分组
+        List<Long> messageIds = recentDesc.stream().map(ChatMessageEntity::getId).toList();
+        Map<Long, List<ChatAttachmentService.LoadedAttachment>> atts =
+                attachmentService.loadForMessages(messageIds, true);
+
         List<ChatMessageEntity> asc = new ArrayList<>(recentDesc);
         Collections.reverse(asc);
         return asc.stream()
-                .map(m -> new AgentClient.AgentChatMessage(m.getRole(), m.getContent()))
+                .map(m -> new AgentClient.AgentChatMessage(
+                        m.getRole(), m.getContent(), toAgentImages(atts.get(m.getId()))))
                 .toList();
+    }
+
+    private static List<AgentClient.AgentChatImage> toAgentImages(
+            List<ChatAttachmentService.LoadedAttachment> loaded) {
+        if (loaded == null || loaded.isEmpty()) {
+            return List.of();
+        }
+        return loaded.stream()
+                .filter(a -> a.base64Data() != null)
+                .map(a -> new AgentClient.AgentChatImage(a.mediaType(), a.base64Data()))
+                .toList();
+    }
+
+    /** 当前回合图片落盘后并入发给 agent 的 payload（直接用内存中的字节转 base64，避免回读磁盘） */
+    private AgentClient.AgentChatPayload attachCurrentImages(
+            AgentClient.AgentChatPayload payload, String userId, Long messageId,
+            List<ChatImageValidator.ValidImage> images) {
+        if (images == null || images.isEmpty()) {
+            return payload;
+        }
+        attachmentService.persist(userId, messageId, images);
+        List<AgentClient.AgentChatImage> agentImages = images.stream()
+                .map(i -> new AgentClient.AgentChatImage(i.mimeType(),
+                        java.util.Base64.getEncoder().encodeToString(i.bytes())))
+                .toList();
+        return new AgentClient.AgentChatPayload(payload.userId(), payload.conversationId(),
+                payload.message(), payload.summary(), payload.history(), payload.skills(),
+                payload.allowedTools(), agentImages);
     }
 
     /** 该用户已挂载技能的完整定义（与 agent 端 SkillDefinition 字段对齐） */
@@ -434,8 +541,11 @@ public class ChatController {
         entity.setTraceId(traceId);
         ChatMessageEntity saved = chatMessageRepository.save(entity);
 
-        // 异步写入 RAG 长期记忆（向量索引，跨会话）；失败只记日志，不影响聊天主流程
-        indexConversationAsync(userId, role, content);
+        // 异步写入 RAG 长期记忆（向量索引，跨会话）；纯图片回合文本为空不索引；
+        // 失败只记日志，不影响聊天主流程
+        if (content != null && !content.isBlank()) {
+            indexConversationAsync(userId, role, content);
+        }
         return saved;
     }
 

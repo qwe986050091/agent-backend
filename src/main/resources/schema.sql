@@ -91,6 +91,24 @@ CREATE TABLE IF NOT EXISTS agent_memory (
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='Agent 对话记忆摘要表';
 
 -- ============================================================
+-- P1-8 多模态：对话图片附件元数据（字节落磁盘 {CHAT_IMAGE_DIR}/{user}/{uuid}.ext）
+-- 一条 user 消息可挂多张；仅 user 消息有附件。无外键约束（与 chat_message 删除同事务清理）。
+-- ============================================================
+CREATE TABLE IF NOT EXISTS chat_attachment (
+    id          BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键',
+    message_id  BIGINT       NOT NULL COMMENT '所属用户消息 id（chat_message.id）',
+    user_id     VARCHAR(100) NOT NULL COMMENT '所属用户（用户名，鉴权读取）',
+    media_type  VARCHAR(50)  NOT NULL COMMENT '图片 MIME：image/jpeg|png|gif|webp',
+    file_name   VARCHAR(255)          DEFAULT NULL COMMENT '原始文件名（可选）',
+    size_bytes  BIGINT       NOT NULL DEFAULT 0 COMMENT '原始字节数',
+    storage_key VARCHAR(255) NOT NULL COMMENT '磁盘相对路径 key：{userId}/{uuid}.ext',
+    created_at  DATETIME              DEFAULT NULL COMMENT '上传时间',
+    PRIMARY KEY (id),
+    KEY idx_attachment_message (message_id),
+    KEY idx_attachment_user (user_id)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='对话图片附件元数据表';
+
+-- ============================================================
 -- P2-10 全链路可观测：token 用量 / 工具调用 / RAG 召回 审计表
 -- 注意：chat_message.trace_id 列无法用 IF NOT EXISTS 自动加，
 --       需手工执行（见文件末尾 ALTER 语句，沿用 P1-8 做法）。

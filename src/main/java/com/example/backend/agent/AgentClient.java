@@ -121,17 +121,40 @@ public class AgentClient {
 
     // ==================== 对话协议 DTO ====================
 
-    /** 历史消息（与 agent 端 HistoryMessage 对应） */
-    public record AgentChatMessage(String role, String content) {}
+    /**
+     * 历史/当前消息图片（与 agent 端 ChatImage 对应；仅 user 消息携带）。
+     * 注意：agent 端 DTO 的 JSON 字段是 {@code data}（不是 base64Data），
+     * 若漏配 @JsonProperty，agent 反序列化得到 data=null → INVALID_IMAGE，
+     * 且其 stream 端 produces=text/event-stream 下 JSON 错误体无法写出，最终表现为 500。
+     */
+    public record AgentChatImage(String mimeType,
+                                 @com.fasterxml.jackson.annotation.JsonProperty("data") String base64Data) {}
 
-    /** 对话请求 payload：userId + 会话 + 消息 + 摘要 + 近期历史 + 已挂载技能定义 + 会话级免确认工具 */
+    /** 历史消息（与 agent 端 HistoryMessage 对应；P1-8 起 user 消息可带图片） */
+    public record AgentChatMessage(String role, String content, List<AgentChatImage> images) {
+        /** 纯文本历史消息便捷构造 */
+        public AgentChatMessage(String role, String content) {
+            this(role, content, List.of());
+        }
+    }
+
+    /** 对话请求 payload：userId + 会话 + 消息 + 摘要 + 近期历史 + 已挂载技能定义 + 会话级免确认工具
+     *  + 当前消息图片（P1-8 多模态） */
     public record AgentChatPayload(String userId,
                                    Long conversationId,
                                    String message,
                                    String summary,
                                    List<AgentChatMessage> history,
                                    List<Map<String, Object>> skills,
-                                   List<String> allowedTools) {}
+                                   List<String> allowedTools,
+                                   List<AgentChatImage> images) {
+        /** 兼容无图片构造 */
+        public AgentChatPayload(String userId, Long conversationId, String message, String summary,
+                                List<AgentChatMessage> history, List<Map<String, Object>> skills,
+                                List<String> allowedTools) {
+            this(userId, conversationId, message, summary, history, skills, allowedTools, List.of());
+        }
+    }
 
     /** 同步对话结果：回复文本 + 回合后最新摘要 + traceId/trace 数据（用量/工具/召回） */
     public record AgentChatResult(String answer, String summary, String traceId, TraceData trace) {}
@@ -152,6 +175,17 @@ public class AgentClient {
     public static class StreamClientClosedException extends RuntimeException {
         public StreamClientClosedException(String message, Throwable cause) {
             super(message, cause);
+        }
+    }
+
+    /**
+     * agent 在 SSE 响应已提交后通过 {@code event: error} 报告的终态业务错误
+     * （如上游模型拒绝图片）。连接本身健康，错误事件已透传前端，
+     * 外层必须正常 complete 前端 emitter，不能 completeWithError 把流截断成 network error。
+     */
+    public static class AgentStreamTerminalException extends RuntimeException {
+        public AgentStreamTerminalException(String rawEventData) {
+            super(rawEventData);
         }
     }
 
@@ -212,6 +246,8 @@ public class AgentClient {
      *   - 默认 event 的 data：token 片段（转发给前端，并累积为完整回复）
      *   - event: tool/rag/usage：trace 事件（原样转发前端，同时累积供回合后落库）
      *   - event: memory 的 data：{"summary":"..."}（不转发，回合后回调落库）
+     *   - event: error 的 data：{code,message}（SSE 已提交后的终态业务错误；透传前端，
+     *     同时按 error 结局收尾，不触发 onComplete、不落库助手消息）
      *   - data: [DONE]：结束标记（不转发）
      *
      * 阻塞方法，需在工作线程中调用。仅过熔断器（流式不重试）；熔断打开时立即失败。
@@ -239,7 +275,11 @@ public class AgentClient {
                     .body(payload)
                     .exchange((request, response) -> {
                         if (response.getStatusCode().isError()) {
-                            throw new IllegalStateException("Agent 流式接口返回错误状态: " + response.getStatusCode());
+                            // agent 在流开始前拒绝（4xx/503）：读出 JSON 错误体带上真因，
+                            // 否则上层只能看到无信息量的 "错误状态: 400 BAD_REQUEST"
+                            String bodyText = readBodyLimited(response.getBody(), 4096);
+                            throw new IllegalStateException("Agent 流式接口返回错误状态: "
+                                    + response.getStatusCode() + describeAgentError(bodyText));
                         }
                         // 暴露响应体流：前端断开时由调用方 close 该流以取消本次请求
                         bodyRef.set(response.getBody());
@@ -282,6 +322,16 @@ public class AgentClient {
             log.warn("[AgentClient] agent 熔断中，流式请求快速失败");
             safeNotifyError(onTerminalError, e, trace.snapshot());
             emitter.completeWithError(new IllegalStateException("AI 服务暂时不可用（熔断中），请稍后再试"));
+        } catch (AgentStreamTerminalException e) {
+            // agent 的 event:error 已透传前端：按错误记账（不落库助手消息），前端连接正常收尾
+            log.warn("[AgentClient] agent 流式终态业务错误: {}", e.getMessage());
+            safeNotifyError(onTerminalError, e, trace.snapshot());
+            try {
+                emitter.complete();
+            } catch (Exception completeEx) {
+                log.debug("[AgentClient] error 事件后 complete 失败（前端可能已断开）: {}",
+                        completeEx.getMessage());
+            }
         } catch (Exception e) {
             log.warn("[AgentClient] 流式对话失败: {}", e.getMessage());
             safeNotifyError(onTerminalError, e, trace.snapshot());
@@ -297,6 +347,42 @@ public class AgentClient {
             } catch (Exception ex) {
                 log.warn("[AgentClient] onTerminalError 回调异常（不影响流收尾）: {}", ex.getMessage());
             }
+        }
+    }
+
+    /** 读取错误响应体（限量，避免异常页面/超长报文撑爆内存与日志）；读失败返回空串 */
+    static String readBodyLimited(InputStream in, int maxBytes) {
+        if (in == null) {
+            return "";
+        }
+        try {
+            byte[] bytes = in.readNBytes(maxBytes);
+            return new String(bytes, StandardCharsets.UTF_8);
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    /**
+     * 把 agent 的 JSON 错误体（{"code":"...","message":"..."}）提炼成可读后缀；
+     * 非 JSON/空体返回空串（调用方只保留状态码文案）。
+     */
+    static String describeAgentError(String bodyText) {
+        if (bodyText == null || bodyText.isBlank()) {
+            return "";
+        }
+        String body = bodyText.strip();
+        try {
+            JsonNode node = new ObjectMapper().readTree(body);
+            String message = node.path("message").asText("");
+            String code = node.path("code").asText("");
+            if (message.isBlank()) {
+                return "";
+            }
+            return code.isBlank() ? "：" + message : "：[" + code + "] " + message;
+        } catch (Exception e) {
+            // 非 JSON：截断原文辅助排查
+            return "：" + (body.length() > 500 ? body.substring(0, 500) : body);
         }
     }
 
@@ -327,6 +413,14 @@ public class AgentClient {
             // 高危工具审批请求：原样转发前端弹窗，不落库、不累积（决策走独立短连接）
             forwardNamedEvent(emitter, "approval-request", data);
             return;
+        }
+        if ("error".equals(eventName)) {
+            // agent 在 SSE 已提交后下发的终态错误（如上游模型拒绝图片）：
+            // 先原样透传给前端拿到可读原因，再抛标记异常终止交换——
+            // 外层据此走 onTerminalError（outcome=error，不 persit 空/半截助手回复），
+            // 但前端 emitter 正常 complete（连接健康，不能 completeWithError 把流截断成 network error）
+            forwardNamedEvent(emitter, "error", data);
+            throw new AgentStreamTerminalException(data);
         }
         if ("tool".equals(eventName)) {
             ToolData tool = parseEventData(data, ToolData.class);

@@ -102,6 +102,17 @@ public class BackendMetrics {
                 .increment());
     }
 
+    /**
+     * 记录一次对话入口限流拒绝（P0-4）。
+     *
+     * @param code 拒绝原因码：RATE_LIMITED / DAILY_BUDGET_EXCEEDED / TOO_MANY_CONCURRENT
+     */
+    public void recordRateLimitRejected(String code) {
+        safe(() -> registry.counter("backend.ratelimit.rejected",
+                "reason", code == null || code.isBlank() ? "unknown" : tag(code))
+                .increment());
+    }
+
     /** 熔断状态 Gauge：抓取时实时计算，当前状态输出 1 其余输出 0；附失败率 */
     private void registerCircuitBreakerGauges(CircuitBreaker cb) {
         for (CircuitBreaker.State state : CircuitBreaker.State.values()) {
