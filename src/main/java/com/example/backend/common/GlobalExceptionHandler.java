@@ -50,6 +50,17 @@ public class GlobalExceptionHandler {
                 .body(Map.of("code", "FILE_TOO_LARGE", "message", "文件超过 20MB 大小上限"));
     }
 
+    /** agent 内容安全闸门拒绝输入（P4-17）：返回干净 400 + 可读文案，不暴露命中规则 */
+    @ExceptionHandler(com.example.backend.agent.AgentClient.AgentSafetyBlockedException.class)
+    public ResponseEntity<Map<String, Object>> handleSafetyBlocked(
+            com.example.backend.agent.AgentClient.AgentSafetyBlockedException e) {
+        String message = com.example.backend.agent.AgentClient.safetyBlockedUserMessage(e);
+        return ResponseEntity.badRequest().body(Map.of(
+                "code", "SAFETY_BLOCKED",
+                "message", message == null || message.isBlank()
+                        ? "消息未通过内容安全检查，请调整后重试" : message));
+    }
+
     /** 兜底：未预期异常 */
     @ExceptionHandler(Exception.class)
     public ResponseEntity<Map<String, Object>> handleException(Exception e) {

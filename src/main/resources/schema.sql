@@ -200,6 +200,32 @@ CREATE TABLE IF NOT EXISTS message_feedback (
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='回答反馈（赞/踩）记录表';
 
 -- ============================================================
+-- P4-17 内容安全：prompt 注入 / 敏感信息检测记录表（新表，启动即建，无需手工 ALTER）
+-- 一行 = 一次检测事件（一回合可多行：input/rag/tool_output/output 各通道）；
+-- monitor 期 action 恒为 none，分析"本该拦截"看 score >= 8 的行。
+-- ============================================================
+CREATE TABLE IF NOT EXISTS prompt_safety_record (
+    id              BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键',
+    trace_id        VARCHAR(64)  NOT NULL COMMENT '回合 traceId（=chat_message.trace_id）',
+    user_id         VARCHAR(100) NOT NULL DEFAULT '' COMMENT '用户（用户名）',
+    conversation_id BIGINT       NOT NULL DEFAULT 0 COMMENT '所属会话（冗余自消息行，便于聚合）',
+    channel         VARCHAR(20)  NOT NULL COMMENT '检测通道：input/rag/tool_output/output/outbound_http',
+    rule_hits       JSON         DEFAULT NULL COMMENT '命中规则明细 [{ruleId,category,weight}]',
+    score           INT          NOT NULL DEFAULT 0 COMMENT '规则加权分',
+    verdict         VARCHAR(20)  NOT NULL DEFAULT 'benign' COMMENT '判定：benign/suspicious/malicious',
+    detector        VARCHAR(20)  NOT NULL DEFAULT 'rule' COMMENT '判定来源：rule/llm/dlp',
+    action          VARCHAR(20)  NOT NULL DEFAULT 'none' COMMENT '实际动作：none/warn/block',
+    llm_reason      VARCHAR(500) DEFAULT NULL COMMENT 'LLM 分类器理由（detector=llm 时）',
+    excerpt         VARCHAR(500) DEFAULT NULL COMMENT '命中片段（截断，复盘用；不存全量原文）',
+    latency_ms      INT          DEFAULT NULL COMMENT '检测耗时',
+    created_at      DATETIME     DEFAULT NULL COMMENT '创建时间',
+    PRIMARY KEY (id),
+    KEY idx_safety_trace (trace_id),
+    KEY idx_safety_user_created (user_id, created_at),
+    KEY idx_safety_verdict_created (verdict, created_at)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='prompt 注入/内容安全检测记录（P4-17）';
+
+-- ============================================================
 -- 手工迁移（CREATE TABLE IF NOT EXISTS 不会给已存在的表加列）：
 -- 本地与生产均需执行一次（P2-10）：
 -- ALTER TABLE chat_message ADD COLUMN trace_id VARCHAR(64) NULL COMMENT '全链路 traceId' AFTER id;

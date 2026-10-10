@@ -2,10 +2,14 @@ package com.example.backend.observability;
 
 import com.example.backend.agent.trace.RagData;
 import com.example.backend.agent.trace.RagSegmentData;
+import com.example.backend.agent.trace.SafetyData;
 import com.example.backend.agent.trace.ToolData;
 import com.example.backend.agent.trace.TraceData;
 import com.example.backend.agent.trace.UsageData;
 import com.example.backend.billing.BillingService;
+import com.example.backend.security.PromptSafetyEntity;
+import com.example.backend.security.PromptSafetyRepository;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -32,15 +36,19 @@ public class TracePersistenceService {
     private final ToolCallRecordRepository toolRepository;
     private final RagRecallRecordRepository ragRepository;
     private final BillingService billingService;
+    private final PromptSafetyRepository promptSafetyRepository;
+    private final ObjectMapper objectMapper = new ObjectMapper();
 
     public TracePersistenceService(LlmUsageRecordRepository usageRepository,
                                    ToolCallRecordRepository toolRepository,
                                    RagRecallRecordRepository ragRepository,
-                                   BillingService billingService) {
+                                   BillingService billingService,
+                                   PromptSafetyRepository promptSafetyRepository) {
         this.usageRepository = usageRepository;
         this.toolRepository = toolRepository;
         this.ragRepository = ragRepository;
         this.billingService = billingService;
+        this.promptSafetyRepository = promptSafetyRepository;
     }
 
     /**
@@ -78,6 +86,8 @@ public class TracePersistenceService {
                     traceData == null ? List.of() : traceData.tools());
             saveRagRows(traceId, userId, conversationId,
                     traceData == null ? List.of() : traceData.recalls());
+            saveSafetyRows(traceId, userId, conversationId,
+                    traceData == null ? List.of() : traceData.safeties());
         } catch (Exception e) {
             // 审计落库失败不影响聊天主流程
             log.warn("[Trace] trace 落库失败（不影响聊天）traceId={}: {}", traceId, e.getMessage());
@@ -187,5 +197,88 @@ public class TracePersistenceService {
                 ragRepository.save(row);
             }
         }
+    }
+
+    /** 内容安全检测行（P4-17）：一回合可多行（input/rag/tool_output/output 各通道） */
+    private void saveSafetyRows(String traceId, String userId, Long conversationId,
+                                List<SafetyData> safeties) {
+        if (safeties == null || safeties.isEmpty()) {
+            return;
+        }
+        for (SafetyData s : safeties) {
+            if (s == null || s.channel() == null) {
+                continue;
+            }
+            PromptSafetyEntity row = new PromptSafetyEntity();
+            row.setTraceId(traceId);
+            row.setUserId(userId == null ? "" : userId);
+            row.setConversationId(conversationId == null ? 0L : conversationId);
+            row.setChannel(s.channel());
+            row.setRuleHits(ruleHitsJson(s));
+            row.setScore(s.score());
+            row.setVerdict(blankTo(s.verdict(), "benign"));
+            row.setDetector(blankTo(s.detector(), "rule"));
+            row.setAction(blankTo(s.action(), "none"));
+            row.setLlmReason(truncate(s.llmReason(), 500));
+            row.setExcerpt(truncate(s.excerpt(), 500));
+            row.setLatencyMs((int) Math.min(Integer.MAX_VALUE, Math.max(0, s.latencyMs())));
+            row.setCreatedAt(LocalDateTime.now());
+            promptSafetyRepository.save(row);
+        }
+    }
+
+    /**
+     * 流开始前被 agent 安全闸门拒绝（400 SAFETY_BLOCKED）时补录一条审计行。
+     * 该路径没有 agent trace 数据，只有 backend 侧已知的原文片段；
+     * 分数/命中明细以 agent 日志为准（block 模式下必 ≥ block 阈值）。
+     */
+    public void recordInputBlock(String traceId, String userId, Long conversationId, String message) {
+        if (traceId == null || traceId.isBlank()) {
+            return;
+        }
+        try {
+            PromptSafetyEntity row = new PromptSafetyEntity();
+            row.setTraceId(traceId);
+            row.setUserId(userId == null ? "" : userId);
+            row.setConversationId(conversationId == null ? 0L : conversationId);
+            row.setChannel("input");
+            row.setScore(0);
+            row.setVerdict("malicious");
+            row.setDetector("rule");
+            row.setAction("block");
+            row.setExcerpt(truncate(message, 500));
+            row.setCreatedAt(LocalDateTime.now());
+            promptSafetyRepository.save(row);
+        } catch (Exception e) {
+            // 审计失败不影响对话主流程
+            log.warn("[Trace] 安全拦截审计落库失败（不影响对话）traceId={}: {}", traceId, e.getMessage());
+        }
+    }
+
+    /** 按 traceId 取安全检测记录（P4-16 审计后台/复盘用） */
+    public List<PromptSafetyEntity> findSafeties(String traceId) {
+        return promptSafetyRepository.findByTraceIdOrderByIdAsc(traceId);
+    }
+
+    private String ruleHitsJson(SafetyData s) {
+        if (s.ruleHits() == null || s.ruleHits().isEmpty()) {
+            return null;
+        }
+        try {
+            return objectMapper.writeValueAsString(s.ruleHits());
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private static String blankTo(String v, String fallback) {
+        return v == null || v.isBlank() ? fallback : v;
+    }
+
+    private static String truncate(String v, int max) {
+        if (v == null) {
+            return null;
+        }
+        return v.length() <= max ? v : v.substring(0, max);
     }
 }

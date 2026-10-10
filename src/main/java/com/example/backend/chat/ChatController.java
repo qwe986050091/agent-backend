@@ -295,6 +295,13 @@ public class ChatController {
                             // 终态错误：仅「前端断连/超时」按取消记账（带已累积 trace）；
                             // 熔断/5xx/agent 故障只打指标，不写用量行（避免污染用量汇总）
                             (err, accumulated) -> {
+                                // agent 内容安全闸门拒绝输入（P4-17）：补录审计行，无真实对话不写 usage
+                                if (AgentClient.isSafetyBlocked(err)) {
+                                    tracePersistenceService.recordInputBlock(
+                                            traceId, userId, conversationId, rawTextStream);
+                                    recordOutcomeOnce(metrics, outcomeRecorded, "safety_blocked", streamStart);
+                                    return;
+                                }
                                 String outcome = terminalOutcome(err, clientInitiated.get());
                                 recordOutcomeOnce(metrics, outcomeRecorded, outcome, streamStart);
                                 if ("cancelled".equals(outcome)) {

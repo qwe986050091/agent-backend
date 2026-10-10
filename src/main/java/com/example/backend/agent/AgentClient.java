@@ -1,6 +1,7 @@
 package com.example.backend.agent;
 
 import com.example.backend.agent.trace.RagData;
+import com.example.backend.agent.trace.SafetyData;
 import com.example.backend.agent.trace.ToolData;
 import com.example.backend.agent.trace.TraceData;
 import com.example.backend.agent.trace.UsageData;
@@ -189,6 +190,30 @@ public class AgentClient {
         }
     }
 
+    /**
+     * 流开始前被 agent 内容安全闸门拒绝（400 SAFETY_BLOCKED，P4-17）。
+     * backend 据此补录 prompt_safety_record 审计行，并以 400 干净错误返回前端。
+     */
+    public static class AgentSafetyBlockedException extends RuntimeException {
+        public AgentSafetyBlockedException(String detail) {
+            super(detail);
+        }
+    }
+
+    /** 是否为 agent 安全闸门拒绝（供 ChatController/GlobalExceptionHandler 识别） */
+    public static boolean isSafetyBlocked(Throwable e) {
+        return e instanceof AgentSafetyBlockedException;
+    }
+
+    /** 从异常文案提取对用户可读的安全拒绝提示（无则返回 null，由调用方用兜底文案） */
+    public static String safetyBlockedUserMessage(Throwable e) {
+        if (!(e instanceof AgentSafetyBlockedException) || e.getMessage() == null) {
+            return null;
+        }
+        int idx = e.getMessage().indexOf("SAFETY_BLOCKED]");
+        return idx < 0 ? null : e.getMessage().substring(idx + "SAFETY_BLOCKED]".length()).strip();
+    }
+
     /** 同步对话，返回 Agent 回复文本与最新摘要（重试在内、熔断在外；熔断打开时快速失败） */
     public AgentChatResult chat(AgentChatPayload payload) {
         // 装饰顺序：CB(retry(metrics(doChat))) —— 重试在一次熔断器统计内进行，指标只记整体耗时
@@ -231,7 +256,13 @@ public class AgentClient {
                     ? List.of()
                     : mapper.convertValue(resp.get("retrievals"),
                             mapper.getTypeFactory().constructCollectionType(List.class, RagData.class));
-            return new TraceData(usage, tools == null ? List.of() : tools, recalls == null ? List.of() : recalls);
+            List<SafetyData> safeties = resp.get("safeties") == null
+                    ? List.of()
+                    : mapper.convertValue(resp.get("safeties"),
+                            mapper.getTypeFactory().constructCollectionType(List.class, SafetyData.class));
+            return new TraceData(usage, tools == null ? List.of() : tools,
+                    recalls == null ? List.of() : recalls,
+                    safeties == null ? List.of() : safeties);
         } catch (Exception e) {
             LoggerFactory.getLogger(AgentClient.class)
                     .warn("[AgentClient] trace 数据解析失败（不影响对话）: {}", e.getMessage());
@@ -278,8 +309,14 @@ public class AgentClient {
                             // agent 在流开始前拒绝（4xx/503）：读出 JSON 错误体带上真因，
                             // 否则上层只能看到无信息量的 "错误状态: 400 BAD_REQUEST"
                             String bodyText = readBodyLimited(response.getBody(), 4096);
+                            String detail = describeAgentError(bodyText);
+                            if (bodyText.contains("SAFETY_BLOCKED")) {
+                                // 内容安全闸门拒绝（P4-17）：专用异常，上游补录审计行并给前端干净 400
+                                throw new AgentSafetyBlockedException(
+                                        "Agent 安全闸门拒绝输入: " + detail);
+                            }
                             throw new IllegalStateException("Agent 流式接口返回错误状态: "
-                                    + response.getStatusCode() + describeAgentError(bodyText));
+                                    + response.getStatusCode() + detail);
                         }
                         // 暴露响应体流：前端断开时由调用方 close 该流以取消本次请求
                         bodyRef.set(response.getBody());
@@ -322,6 +359,12 @@ public class AgentClient {
             log.warn("[AgentClient] agent 熔断中，流式请求快速失败");
             safeNotifyError(onTerminalError, e, trace.snapshot());
             emitter.completeWithError(new IllegalStateException("AI 服务暂时不可用（熔断中），请稍后再试"));
+        } catch (AgentSafetyBlockedException e) {
+            // 内容安全闸门拒绝输入（P4-17）：流未开始，completeWithError 交由全局异常处理返回干净 400；
+            // terminal 回调里 ChatController 补录 prompt_safety_record 审计行
+            log.warn("[AgentClient] agent 安全闸门拒绝输入: {}", e.getMessage());
+            safeNotifyError(onTerminalError, e, trace.snapshot());
+            emitter.completeWithError(e);
         } catch (AgentStreamTerminalException e) {
             // agent 的 event:error 已透传前端：按错误记账（不落库助手消息），前端连接正常收尾
             log.warn("[AgentClient] agent 流式终态业务错误: {}", e.getMessage());
@@ -422,6 +465,16 @@ public class AgentClient {
             forwardNamedEvent(emitter, "error", data);
             throw new AgentStreamTerminalException(data);
         }
+        if ("safety".equals(eventName)) {
+            // 内容安全检测记录（P4-17）：累积供回合末落 prompt_safety_record，同时透传前端
+            // （前端对未知命名事件已忽略；保留转发以便后续 UI 加轻量标记）
+            SafetyData safety = parseEventData(data, SafetyData.class);
+            if (safety != null) {
+                trace.safeties.add(safety);
+            }
+            forwardNamedEvent(emitter, "safety", data);
+            return;
+        }
         if ("tool".equals(eventName)) {
             ToolData tool = parseEventData(data, ToolData.class);
             if (tool != null) {
@@ -492,18 +545,20 @@ public class AgentClient {
     private static final class TraceAccumulator {
         private final List<ToolData> tools = new ArrayList<>();
         private final List<RagData> recalls = new ArrayList<>();
+        private final List<SafetyData> safeties = new ArrayList<>();
         private volatile UsageData usage;
 
         /** agent fallback 重放（trace-reset）：清空已累积的首轮数据 */
         private void reset() {
             tools.clear();
             recalls.clear();
+            safeties.clear();
             usage = null;
         }
 
         private TraceData snapshot() {
             return new TraceData(usage == null ? UsageData.empty() : usage,
-                    List.copyOf(tools), List.copyOf(recalls));
+                    List.copyOf(tools), List.copyOf(recalls), List.copyOf(safeties));
         }
     }
 
