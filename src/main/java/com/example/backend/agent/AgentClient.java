@@ -429,10 +429,10 @@ public class AgentClient {
         }
     }
 
-    /** 分发一个完整 SSE 事件 */
-    private void dispatchEvent(String eventName, String data,
-                               StringBuilder fullAnswer, String[] memorySummary,
-                               SseEmitter emitter, TraceAccumulator trace) throws IOException {
+    /** 分发一个完整 SSE 事件（包私有以便单测；P2-12） */
+    void dispatchEvent(String eventName, String data,
+                       StringBuilder fullAnswer, String[] memorySummary,
+                       SseEmitter emitter, TraceAccumulator trace) throws IOException {
         if ("memory".equals(eventName)) {
             // 摘要回传事件：解析 JSON 取 summary，不转发给前端
             try {
@@ -541,8 +541,8 @@ public class AgentClient {
         }
     }
 
-    /** SSE trace 事件累积器（单工作线程内使用，无需并发结构） */
-    private static final class TraceAccumulator {
+    /** SSE trace 事件累积器（单工作线程内使用，无需并发结构）；包私有以便单测（P2-12） */
+    static final class TraceAccumulator {
         private final List<ToolData> tools = new ArrayList<>();
         private final List<RagData> recalls = new ArrayList<>();
         private final List<SafetyData> safeties = new ArrayList<>();
@@ -556,7 +556,8 @@ public class AgentClient {
             usage = null;
         }
 
-        private TraceData snapshot() {
+        /** 累积快照（包私有以便单测；P2-12） */
+        TraceData snapshot() {
             return new TraceData(usage == null ? UsageData.empty() : usage,
                     List.copyOf(tools), List.copyOf(recalls), List.copyOf(safeties));
         }
