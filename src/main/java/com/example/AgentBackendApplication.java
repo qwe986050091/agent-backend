@@ -3,6 +3,7 @@ package com.example;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.context.properties.ConfigurationPropertiesScan;
+import org.springframework.scheduling.annotation.EnableScheduling;
 
 /**
  * Agent 对话网页后端启动类
@@ -10,9 +11,12 @@ import org.springframework.boot.context.properties.ConfigurationPropertiesScan;
  * 包扫描从 com.example 开始，同时覆盖：
  *   - com.example.agent.*   ：复用的 Agent 核心（LangChain4j、Skill、Tools）
  *   - com.example.backend.* ：网页后端业务（用户认证、Skill 上传、对话记录）
+ *
+ * @EnableScheduling：定时任务 poller（P2-9，TaskPoller）依赖
  */
 @SpringBootApplication
 @ConfigurationPropertiesScan
+@EnableScheduling
 public class AgentBackendApplication {
 
     public static void main(String[] args) {

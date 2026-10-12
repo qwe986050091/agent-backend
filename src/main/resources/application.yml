@@ -121,6 +121,17 @@ app:
       max-count: 3                                           # 单条消息图片数
       max-size-bytes: ${CHAT_IMAGE_MAX_SIZE:5242880}         # 单图原始字节 ≤5MB（3 张 base64 ≈20MB，nginx 25m 内）
       dir: ${CHAT_IMAGE_DIR:data/chat-images}                # 落盘目录（生产 /opt/agent-data/chat-images）
+  # ===== 定时/主动 Agent（P2-9；enabled=false 即刻停调度，数据保留，可作回滚手段） =====
+  task:
+    enabled: ${APP_TASK_ENABLED:true}
+    poll-interval-seconds: ${APP_TASK_POLL_INTERVAL_SECONDS:30}
+    max-per-user: ${APP_TASK_MAX_PER_USER:10}                # 每用户启用任务上限
+    min-interval-minutes: ${APP_TASK_MIN_INTERVAL_MINUTES:5} # cron 前 5 次执行最小间隔校验
+    max-runs-per-day: ${APP_TASK_MAX_RUNS_PER_DAY:24}        # 每任务每日执行上限（含 run-now）
+    max-concurrent-runs: ${APP_TASK_MAX_CONCURRENT_RUNS:2}   # 执行池大小
+    zone: ${APP_TASK_ZONE:Asia/Shanghai}
+    lock-ttl-seconds: ${APP_TASK_LOCK_TTL_SECONDS:900}       # Redis 任务锁兜底 TTL
+    zombie-timeout-minutes: ${APP_TASK_ZOMBIE_TIMEOUT_MINUTES:30}
 
 # ===== 用户级限流与配额（P0-4：防死循环 prompt / 被盗会话无上限烧 token） =====
 # 三道闸门均按用户名维度；任一阈值置 0 = 关闭该闸门。生产阈值经 systemd Environment 注入。

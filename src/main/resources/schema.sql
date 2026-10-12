@@ -226,6 +226,62 @@ CREATE TABLE IF NOT EXISTS prompt_safety_record (
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='prompt 注入/内容安全检测记录（P4-17）';
 
 -- ============================================================
+-- P2-9 定时/主动 Agent：任务定义 / 执行记录 / 站内通知（新表，启动即建，无需手工 ALTER）
+-- ============================================================
+
+-- 任务定义
+CREATE TABLE IF NOT EXISTS scheduled_task (
+    id              BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键',
+    user_id         VARCHAR(100) NOT NULL COMMENT '所属用户（用户名）',
+    name            VARCHAR(100) NOT NULL COMMENT '任务名（会话标题后缀"⏰ {name}"）',
+    prompt          TEXT         NOT NULL COMMENT '任务指令（执行时自动前缀注入当前时间）',
+    cron_expr       VARCHAR(100) NOT NULL COMMENT 'Spring 6 段 cron（秒 分 时 日 月 周；Asia/Shanghai）',
+    enabled         TINYINT      NOT NULL DEFAULT 1 COMMENT '启用开关',
+    tools_whitelist JSON         DEFAULT NULL COMMENT '任务级预授权工具（创建时明示风险；并入 allowedTools）',
+    conversation_id BIGINT       DEFAULT NULL COMMENT '任务专属会话（懒创建）',
+    next_run_at     DATETIME     DEFAULT NULL COMMENT '下次执行时间（列表展示 + DB CAS 认领凭据）',
+    last_run_at     DATETIME     DEFAULT NULL,
+    created_at      DATETIME     DEFAULT NULL,
+    updated_at      DATETIME     DEFAULT NULL,
+    PRIMARY KEY (id),
+    KEY idx_task_due (enabled, next_run_at),
+    KEY idx_task_user (user_id, id)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='定时任务定义（P2-9）';
+
+-- 执行记录（执行态管理）
+CREATE TABLE IF NOT EXISTS scheduled_task_run (
+    id                   BIGINT       NOT NULL AUTO_INCREMENT,
+    task_id              BIGINT       NOT NULL,
+    user_id              VARCHAR(100) NOT NULL,
+    status               VARCHAR(20)  NOT NULL COMMENT 'running/success/failed/skipped_budget',
+    trace_id             VARCHAR(64)  DEFAULT NULL COMMENT '直通现有 trace 审计（usage/tool/rag 全链路可回查）',
+    assistant_message_id BIGINT       DEFAULT NULL COMMENT '结果消息（跳转会话用）',
+    duration_ms          BIGINT       DEFAULT NULL,
+    error_message        VARCHAR(500) DEFAULT NULL,
+    started_at           DATETIME     DEFAULT NULL,
+    finished_at          DATETIME     DEFAULT NULL,
+    created_at           DATETIME     DEFAULT NULL,
+    PRIMARY KEY (id),
+    KEY idx_run_task (task_id, id),
+    KEY idx_run_user_created (user_id, created_at)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='定时任务执行记录（P2-9）';
+
+-- 站内通知（M2）
+CREATE TABLE IF NOT EXISTS user_notification (
+    id                     BIGINT       NOT NULL AUTO_INCREMENT,
+    user_id                VARCHAR(100) NOT NULL,
+    type                   VARCHAR(30)  NOT NULL DEFAULT 'task_result' COMMENT '事件类型（预留给后续审批提醒等）',
+    title                  VARCHAR(200) NOT NULL,
+    body                   VARCHAR(500) DEFAULT NULL COMMENT '回答摘要（截断 120 字）',
+    target_conversation_id BIGINT       DEFAULT NULL COMMENT '点击跳转目标会话',
+    read_at                DATETIME     DEFAULT NULL COMMENT '空=未读',
+    created_at             DATETIME     DEFAULT NULL,
+    PRIMARY KEY (id),
+    KEY idx_notif_user (user_id, id),
+    KEY idx_notif_user_unread (user_id, read_at)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='站内通知事件（P2-9 M2）';
+
+-- ============================================================
 -- 手工迁移（CREATE TABLE IF NOT EXISTS 不会给已存在的表加列）：
 -- 本地与生产均需执行一次（P2-10）：
 -- ALTER TABLE chat_message ADD COLUMN trace_id VARCHAR(64) NULL COMMENT '全链路 traceId' AFTER id;

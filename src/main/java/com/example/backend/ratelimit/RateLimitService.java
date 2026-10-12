@@ -136,6 +136,31 @@ public class RateLimitService {
     }
 
     /**
+     * 仅检查「当日 token 预算」闸门（P2-9 定时任务执行前预检）。
+     *
+     * 与 {@link #tryAcquire} 的预算判定完全同口径（含管理员豁免），但不消耗 RPM/在途名额——
+     * 定时任务不应占用用户的交互配额，故不能直接复用 tryAcquire（会误耗名额）。
+     * 查询失败 fail-open（放行）。
+     */
+    public boolean isDailyBudgetExceeded(String username) {
+        if (!props.isEnabled() || props.getDailyTokenBudget() <= 0
+                || username == null || username.isBlank()) {
+            return false;
+        }
+        if (props.isExemptAdmins() && adminProperties.isAdmin(username)) {
+            return false;
+        }
+        try {
+            Long usedToday = usageRepository.sumTotalTokensSince(username, LocalDate.now().atStartOfDay());
+            long used = usedToday == null ? 0L : usedToday;
+            return used >= props.getDailyTokenBudget();
+        } catch (Exception e) {
+            log.warn("[RateLimit] 用户 {} 当日预算查询失败（定时任务预检 fail-open）: {}", username, e.getMessage());
+            return false;
+        }
+    }
+
+    /**
      * 回合结束释放在途名额（同步路径在 afterCompletion；SSE 在异步分发完成后的 afterCompletion）。
      * 幂等：重复/多余调用由 Lua 脚本归零兜底；频率窗口与日预算无需释放。
      */

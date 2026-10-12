@@ -28,24 +28,32 @@ public class WebConfig implements WebMvcConfigurer {
     public void addCorsMappings(CorsRegistry registry) {
         // 允许本地开发地址与生产域名访问 /api
         // 注意：Spring 对不在白名单内的 Origin 直接返回 403，生产域名必须加进来
+        // 注意：nginx→backend 是明文 HTTP 一跳，浏览器 https Origin 会被视为「跨域」走本配置，
+        //      方法白名单必须覆盖全部在用方法（漏 PATCH 曾导致 2026-10-10 会话重命名/任务编辑 403）
         registry.addMapping("/api/**")
                 .allowedOrigins(
                         "http://localhost:5173",
                         "http://127.0.0.1:5173",
                         "http://zlfshop.xyz",
-                        "https://zlfshop.xyz")
-                .allowedMethods("GET", "POST", "PUT", "DELETE", "OPTIONS")
+                        "https://zlfshop.xyz",
+                        // 2026-10-11 主域名迁移到 zlfshop.cn（.xyz 保留双域名并行）
+                        "http://zlfshop.cn",
+                        "https://zlfshop.cn",
+                        "http://www.zlfshop.cn",
+                        "https://www.zlfshop.cn")
+                .allowedMethods("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")
                 .allowedHeaders("*")
                 .allowCredentials(true);
     }
 
     @Override
     public void addInterceptors(InterceptorRegistry registry) {
-        // 对话、会话管理、Skill 管理、知识库、反馈、管理后台接口必须登录；
+        // 对话、会话管理、Skill 管理、知识库、反馈、定时任务、站内通知、管理后台接口必须登录；
         // /api/auth/** 与 /api/health 放行
         registry.addInterceptor(authInterceptor)
                 .addPathPatterns("/api/chat/**", "/api/conversations/**", "/api/skills/**",
-                        "/api/knowledge/**", "/api/usage/**", "/api/feedback/**", "/api/admin/**");
+                        "/api/knowledge/**", "/api/usage/**", "/api/feedback/**", "/api/admin/**",
+                        "/api/tasks/**", "/api/notifications/**");
         // 对话入口用户级限流（频率/在途并发/日 token 预算）；仅占回合的两个发消息接口，
         // 不含 history 等只读接口。注册顺序在鉴权之后：preHandle 必能取到当前用户
         registry.addInterceptor(rateLimitInterceptor)

@@ -1,20 +1,13 @@
 package com.example.backend.chat;
 
 import com.example.backend.agent.AgentClient;
-import com.example.backend.agent.trace.TraceData;
-import com.example.backend.approval.ToolGrantStore;
 import com.example.backend.auth.AuthInterceptor;
 import com.example.backend.common.TraceMdcFilter;
 import com.example.backend.feedback.FeedbackService;
 import com.example.backend.feedback.FeedbackView;
 import com.example.backend.observability.BackendMetrics;
 import com.example.backend.observability.TracePersistenceService;
-import com.example.backend.skill.SkillEntity;
-import com.example.backend.skill.SkillRepository;
-import com.example.backend.skill.UserSkillEntity;
-import com.example.backend.skill.UserSkillRepository;
 import com.example.backend.user.UserEntity;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PreDestroy;
 import jakarta.servlet.http.HttpServletRequest;
 import org.slf4j.Logger;
@@ -33,9 +26,6 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.io.IOException;
 import java.io.InputStream;
-import java.time.LocalDateTime;
-import java.util.ArrayList;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -55,9 +45,9 @@ import java.util.concurrent.atomic.AtomicReference;
  *   POST /api/chat/stream   流式对话（SSE 逐 token），完成后落库
  *   GET  /api/chat/history  当前用户的历史消息
  *
- * <b>无状态化：</b>agent 不保存跨请求状态。每次调用前由本控制器从 MySQL 组装
- * 对话状态（摘要 agent_memory 表 + 最近 30 条历史 chat_message 表 + 已挂载技能定义
- * skill/user_skill 表）随 payload 下发；agent 回合结束回传最新摘要，本控制器落库。
+ * <b>回合管线（M1a 起）：</b>状态组装/落库/摘要/RAG 索引等全部平移至
+ * {@link AgentTurnService}，本控制器只负责 HTTP 语义（请求校验、SSE emitter、
+ * 响应映射与指标）；同步回合入口亦由 AgentTurnService.executeTurn 提供（定时任务复用）。
  */
 @RestController
 @RequestMapping("/api/chat")
@@ -65,14 +55,11 @@ public class ChatController {
 
     private static final Logger log = LoggerFactory.getLogger(ChatController.class);
 
-    /** 下发给 agent 重建记忆的最近历史消息条数（agent 侧压缩阈值 40 / 保留 20） */
-    private static final int HISTORY_LIMIT = 30;
-
     /** SSE 单次对话最长时间（5 分钟），超时主动结束，避免连接/线程被无限占用 */
     private static final long SSE_TIMEOUT_MS = 5 * 60 * 1000L;
 
     /**
-     * SSE 流式对话 / RAG 异步索引的工作线程池（HTTP 转发为阻塞调用）。
+     * SSE 流式对话的工作线程池（HTTP 转发为阻塞调用）。
      * 有界：core 8 / max 32 / 队列 200，满载后 AbortPolicy 拒绝（返回 503，快速失败而非无限堆积线程）。
      */
     private final ThreadPoolExecutor streamExecutor = new ThreadPoolExecutor(
@@ -94,44 +81,29 @@ public class ChatController {
 
     private final AgentClient agentClient;
     private final ChatMessageRepository chatMessageRepository;
-    private final AgentMemoryRepository agentMemoryRepository;
-    private final ConversationRepository conversationRepository;
-    private final UserSkillRepository userSkillRepository;
-    private final SkillRepository skillRepository;
-    private final ObjectMapper objectMapper;
     private final TracePersistenceService tracePersistenceService;
     private final BackendMetrics metrics;
-    private final ToolGrantStore toolGrantStore;
     private final FeedbackService feedbackService;
     private final ChatImageValidator imageValidator;
     private final ChatAttachmentService attachmentService;
+    private final AgentTurnService turnService;
 
     public ChatController(AgentClient agentClient,
                           ChatMessageRepository chatMessageRepository,
-                          AgentMemoryRepository agentMemoryRepository,
-                          ConversationRepository conversationRepository,
-                          UserSkillRepository userSkillRepository,
-                          SkillRepository skillRepository,
-                          ObjectMapper objectMapper,
                           TracePersistenceService tracePersistenceService,
                           BackendMetrics metrics,
-                          ToolGrantStore toolGrantStore,
                           FeedbackService feedbackService,
                           ChatImageValidator imageValidator,
-                          ChatAttachmentService attachmentService) {
+                          ChatAttachmentService attachmentService,
+                          AgentTurnService turnService) {
         this.agentClient = agentClient;
         this.chatMessageRepository = chatMessageRepository;
-        this.agentMemoryRepository = agentMemoryRepository;
-        this.conversationRepository = conversationRepository;
-        this.userSkillRepository = userSkillRepository;
-        this.skillRepository = skillRepository;
-        this.objectMapper = objectMapper;
         this.tracePersistenceService = tracePersistenceService;
         this.metrics = metrics;
-        this.toolGrantStore = toolGrantStore;
         this.feedbackService = feedbackService;
         this.imageValidator = imageValidator;
         this.attachmentService = attachmentService;
+        this.turnService = turnService;
     }
 
     /** 纯图片回合发给 agent 的兜底文案（DeepSeek 要求 content 块里文本可空，这里给模型明确指令） */
@@ -177,11 +149,12 @@ public class ChatController {
         long start = System.nanoTime();
 
         // 1. 先组装状态（必须在保存当前消息之前，否则当前消息会被当成历史重复下发）
-        AgentClient.AgentChatPayload payload = buildPayload(userId, conversationId, effectiveText);
+        AgentClient.AgentChatPayload payload =
+                turnService.buildPayload(userId, conversationId, effectiveText, List.of());
 
         // 2. 保存用户消息（纯图片回合 content 为空串）+ 图片附件落盘/落库，当前图片并入 payload
-        ChatMessageEntity userMessage = saveMessage(userId, conversationId, "user", rawText, traceId);
-        payload = attachCurrentImages(payload, userId, userMessage.getId(), validImages);
+        ChatMessageEntity userMessage = turnService.saveMessage(userId, conversationId, "user", rawText, traceId);
+        payload = turnService.attachCurrentImages(payload, userId, userMessage.getId(), validImages);
 
         // 3. HTTP 调用 agent 工程（含重试/熔断；失败或熔断中返回 503 友好降级）
         AgentClient.AgentChatResult result;
@@ -196,13 +169,13 @@ public class ChatController {
         }
 
         // 4. 保存助手回复（带 traceId）+ 审计/用量落库 + 回写最新摘要
-        Long assistantMessageId = saveMessage(userId, conversationId, "assistant",
+        Long assistantMessageId = turnService.saveMessage(userId, conversationId, "assistant",
                 result.answer(), result.traceId() != null ? result.traceId() : traceId).getId();
         String agentTraceId = result.traceId() != null ? result.traceId() : traceId;
         tracePersistenceService.persistTurn(agentTraceId, userId, conversationId,
                 assistantMessageId, result.trace());
-        saveSummary(userId, conversationId, result.summary());
-        touchConversation(userId, conversationId);
+        turnService.saveSummary(userId, conversationId, result.summary());
+        turnService.touchConversation(userId, conversationId);
         metrics.recordChat("sync", "success", elapsedMs(start));
 
         Map<String, Object> resp = new HashMap<>();
@@ -268,12 +241,13 @@ public class ChatController {
         String traceId = traceIdOf(request);
 
         // 1. 先组装状态（在保存当前消息之前；纯图片回合发给 agent 的是兜底指令文本）
-        AgentClient.AgentChatPayload payloadBase = buildPayload(userId, conversationId, effectiveText);
+        AgentClient.AgentChatPayload payloadBase =
+                turnService.buildPayload(userId, conversationId, effectiveText, List.of());
 
         // 2. 用户消息先落库（带 traceId；纯图片回合 content 为空串）+ 附件落盘并把当前图片并入 payload
-        ChatMessageEntity userMessage = saveMessage(userId, conversationId, "user", rawTextStream, traceId);
+        ChatMessageEntity userMessage = turnService.saveMessage(userId, conversationId, "user", rawTextStream, traceId);
         final AgentClient.AgentChatPayload payload =
-                attachCurrentImages(payloadBase, userId, userMessage.getId(), validImages);
+                turnService.attachCurrentImages(payloadBase, userId, userMessage.getId(), validImages);
 
         try {
             metrics.changeSseActive(+1);
@@ -285,11 +259,11 @@ public class ChatController {
                             // 流正常结束：助手消息 + trace 审计/用量 + 最新摘要落库
                             (fullAnswer, summary, traceData) -> {
                                 ChatMessageEntity assistant =
-                                        saveMessage(userId, conversationId, "assistant", fullAnswer, traceId);
+                                        turnService.saveMessage(userId, conversationId, "assistant", fullAnswer, traceId);
                                 tracePersistenceService.persistTurn(traceId, userId, conversationId,
                                         assistant.getId(), traceData);
-                                saveSummary(userId, conversationId, summary);
-                                touchConversation(userId, conversationId);
+                                turnService.saveSummary(userId, conversationId, summary);
+                                turnService.touchConversation(userId, conversationId);
                                 recordOutcomeOnce(metrics, outcomeRecorded, "success", streamStart);
                             },
                             // 终态错误：仅「前端断连/超时」按取消记账（带已累积 trace）；
@@ -431,131 +405,6 @@ public class ChatController {
         }
     }
 
-    // ==================== 无状态 payload 组装 ====================
-
-    /**
-     * 从 MySQL 组装 agent 对话请求：会话摘要 + 最近历史（升序）+ 已挂载技能定义。
-     * 摘要与历史均按 (userId, conversationId) 隔离，保证多会话互不串上下文。
-     */
-    private AgentClient.AgentChatPayload buildPayload(String userId, Long conversationId, String message) {
-        String summary = agentMemoryRepository.findById(new AgentMemoryId(userId, conversationId))
-                .map(AgentMemoryEntity::getSummary)
-                .orElse(null);
-
-        List<AgentClient.AgentChatMessage> history = recentHistory(userId, conversationId);
-        List<Map<String, Object>> skills = mountedSkillDefs(userId);
-        // 会话级「始终允许」免确认工具（Redis；TTL 7 天）
-        List<String> allowedTools = List.copyOf(toolGrantStore.list(userId, conversationId));
-
-        return new AgentClient.AgentChatPayload(userId, conversationId, message, summary,
-                history, skills, allowedTools);
-    }
-
-    /**
-     * 最近 {@link #HISTORY_LIMIT} 条会话历史消息（反转为时间升序）。
-     * user 消息携带的图片从磁盘读取并 base64 一并下发（多轮看图对话需要原图在上下文中）。
-     */
-    private List<AgentClient.AgentChatMessage> recentHistory(String userId, Long conversationId) {
-        List<ChatMessageEntity> recentDesc =
-                chatMessageRepository.findTop30ByUserIdAndConversationIdOrderByIdDesc(userId, conversationId);
-        if (recentDesc.isEmpty()) {
-            return List.of();
-        }
-        // 批量加载这批消息的附件（含字节/base64），按 messageId 分组
-        List<Long> messageIds = recentDesc.stream().map(ChatMessageEntity::getId).toList();
-        Map<Long, List<ChatAttachmentService.LoadedAttachment>> atts =
-                attachmentService.loadForMessages(messageIds, true);
-
-        List<ChatMessageEntity> asc = new ArrayList<>(recentDesc);
-        Collections.reverse(asc);
-        return asc.stream()
-                .map(m -> new AgentClient.AgentChatMessage(
-                        m.getRole(), m.getContent(), toAgentImages(atts.get(m.getId()))))
-                .toList();
-    }
-
-    private static List<AgentClient.AgentChatImage> toAgentImages(
-            List<ChatAttachmentService.LoadedAttachment> loaded) {
-        if (loaded == null || loaded.isEmpty()) {
-            return List.of();
-        }
-        return loaded.stream()
-                .filter(a -> a.base64Data() != null)
-                .map(a -> new AgentClient.AgentChatImage(a.mediaType(), a.base64Data()))
-                .toList();
-    }
-
-    /** 当前回合图片落盘后并入发给 agent 的 payload（直接用内存中的字节转 base64，避免回读磁盘） */
-    private AgentClient.AgentChatPayload attachCurrentImages(
-            AgentClient.AgentChatPayload payload, String userId, Long messageId,
-            List<ChatImageValidator.ValidImage> images) {
-        if (images == null || images.isEmpty()) {
-            return payload;
-        }
-        attachmentService.persist(userId, messageId, images);
-        List<AgentClient.AgentChatImage> agentImages = images.stream()
-                .map(i -> new AgentClient.AgentChatImage(i.mimeType(),
-                        java.util.Base64.getEncoder().encodeToString(i.bytes())))
-                .toList();
-        return new AgentClient.AgentChatPayload(payload.userId(), payload.conversationId(),
-                payload.message(), payload.summary(), payload.history(), payload.skills(),
-                payload.allowedTools(), agentImages);
-    }
-
-    /** 该用户已挂载技能的完整定义（与 agent 端 SkillDefinition 字段对齐） */
-    private List<Map<String, Object>> mountedSkillDefs(String userId) {
-        List<UserSkillEntity> mounts = userSkillRepository.findByUserId(userId);
-        List<Map<String, Object>> defs = new ArrayList<>();
-        for (UserSkillEntity mount : mounts) {
-            SkillEntity skill = skillRepository.findByName(mount.getSkillName()).orElse(null);
-            if (skill == null) {
-                // 挂载关系指向已删除的技能，跳过
-                continue;
-            }
-            Map<String, Object> def = new HashMap<>();
-            def.put("name", skill.getName());
-            def.put("shortDescription", skill.getShortDescription());
-            def.put("detailedDescription", skill.getDetailedDescription());
-            def.put("systemPrompt", skill.getSystemPrompt());
-            def.put("toolNames", parseToolNames(skill.getToolNamesJson()));
-            defs.add(def);
-        }
-        return defs;
-    }
-
-    @SuppressWarnings("unchecked")
-    private List<String> parseToolNames(String json) {
-        if (json == null || json.isBlank()) {
-            return List.of();
-        }
-        try {
-            return objectMapper.readValue(json, List.class);
-        } catch (Exception e) {
-            return List.of();
-        }
-    }
-
-    // ==================== 落库 ====================
-
-    /** 保存一条消息（带 traceId），返回落库实体（供关联用量行） */
-    private ChatMessageEntity saveMessage(String userId, Long conversationId, String role,
-                                          String content, String traceId) {
-        ChatMessageEntity entity = new ChatMessageEntity();
-        entity.setUserId(userId);
-        entity.setConversationId(conversationId);
-        entity.setRole(role);
-        entity.setContent(content);
-        entity.setTraceId(traceId);
-        ChatMessageEntity saved = chatMessageRepository.save(entity);
-
-        // 异步写入 RAG 长期记忆（向量索引，跨会话）；纯图片回合文本为空不索引；
-        // 失败只记日志，不影响聊天主流程
-        if (content != null && !content.isBlank()) {
-            indexConversationAsync(userId, role, content);
-        }
-        return saved;
-    }
-
     /** 从 TraceMdcFilter 设置的请求属性取 traceId（理论上必有，兜底 null） */
     private static String traceIdOf(HttpServletRequest request) {
         Object traceId = request.getAttribute(TraceMdcFilter.TRACE_REQUEST_ATTR);
@@ -564,53 +413,5 @@ public class ChatController {
 
     private static long elapsedMs(long startNanos) {
         return (System.nanoTime() - startNanos) / 1_000_000L;
-    }
-
-    /** 回写 agent 回传的最新摘要（按会话；无摘要则跳过）；失败不影响聊天主流程 */
-    private void saveSummary(String userId, Long conversationId, String summary) {
-        if (summary == null || summary.isBlank()) {
-            return;
-        }
-        try {
-            AgentMemoryId id = new AgentMemoryId(userId, conversationId);
-            AgentMemoryEntity entity = agentMemoryRepository.findById(id)
-                    .orElseGet(() -> new AgentMemoryEntity(userId, conversationId, summary));
-            entity.setSummary(summary);
-            entity.setUpdatedAt(LocalDateTime.now());
-            agentMemoryRepository.save(entity);
-        } catch (Exception e) {
-            log.warn("[Chat] 记忆摘要落库失败（不影响聊天）: {}", e.getMessage());
-        }
-    }
-
-    /** 对话后刷新会话的最近活跃时间（默认会话 0 不建表记录，跳过） */
-    private void touchConversation(String userId, Long conversationId) {
-        if (conversationId == null || conversationId == ConversationController.DEFAULT_CONVERSATION_ID) {
-            return;
-        }
-        conversationRepository.findById(conversationId).ifPresent(conv -> {
-            if (conv.getUserId().equals(userId)) {
-                conv.setUpdatedAt(LocalDateTime.now());
-                conversationRepository.save(conv);
-            }
-        });
-    }
-
-    /**
-     * 异步把一条对话索引到 agent 侧向量库（RAG 长期记忆），异常不抛出；traceId 随 MDC 交接。
-     * 线程池满拒绝也必须吞掉：best-effort 索引不能反噬对话主链路（FR-4.3）。
-     */
-    private void indexConversationAsync(String userId, String role, String content) {
-        try {
-            streamExecutor.execute(TraceMdcFilter.wrapWithMdc(() -> {
-                try {
-                    agentClient.indexConversation(userId, role, content);
-                } catch (Exception e) {
-                    log.warn("[Chat] 对话 RAG 索引失败（不影响聊天）: {}", e.getMessage());
-                }
-            }));
-        } catch (RejectedExecutionException e) {
-            log.warn("[Chat] RAG 索引线程池已满，跳过本条长期记忆索引（不影响聊天）");
-        }
     }
 }
