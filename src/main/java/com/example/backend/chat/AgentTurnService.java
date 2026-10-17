@@ -231,6 +231,8 @@ public class AgentTurnService {
             def.put("detailedDescription", skill.getDetailedDescription());
             def.put("systemPrompt", skill.getSystemPrompt());
             def.put("toolNames", parseToolNames(skill.getToolNamesJson()));
+            // 技能类型随 payload 下发 agent：agent 据此决定按普通工具还是子代理（Agent-as-Tool）装配
+            def.put("type", skill.getType());
             defs.add(def);
         }
         return defs;

@@ -18,6 +18,11 @@ import java.time.LocalDateTime;
 @Table(name = "skill", uniqueConstraints = @UniqueConstraint(columnNames = "name"))
 public class SkillEntity {
 
+    /** 类型取值：普通技能包（工具直挂主 Agent） */
+    public static final String TYPE_TOOL = "tool";
+    /** 类型取值：子代理（独立推理循环 + 私有工具，主 Agent 以委派/扇出方式调用） */
+    public static final String TYPE_AGENT = "agent";
+
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
@@ -38,6 +43,10 @@ public class SkillEntity {
     /** 引用的内置 Tool 名称列表，JSON 数组字符串，如 ["calculatorTools","dateTimeTools"] */
     @Column(length = 500)
     private String toolNamesJson;
+
+    /** 技能类型：tool（默认）| agent（子代理）；NULL/空按 tool 处理 */
+    @Column(length = 20)
+    private String type;
 
     /** 是否内置技能（内置不可删除/覆盖） */
     @Column(nullable = false)
@@ -68,6 +77,9 @@ public class SkillEntity {
     public void setSystemPrompt(String systemPrompt) { this.systemPrompt = systemPrompt; }
     public String getToolNamesJson() { return toolNamesJson; }
     public void setToolNamesJson(String toolNamesJson) { this.toolNamesJson = toolNamesJson; }
+    /** 技能类型：NULL/空白兜底为 tool（存量行 ALTER 后已有默认值，此处再保一道） */
+    public String getType() { return type == null || type.isBlank() ? TYPE_TOOL : type; }
+    public void setType(String type) { this.type = type; }
     public boolean isBuiltin() { return builtin; }
     public void setBuiltin(boolean builtin) { this.builtin = builtin; }
     public String getCreatedBy() { return createdBy; }

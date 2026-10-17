@@ -4,7 +4,9 @@ import com.example.backend.agent.AgentClient;
 import com.example.backend.agent.trace.TraceData;
 import com.example.backend.approval.ToolGrantStore;
 import com.example.backend.observability.TracePersistenceService;
+import com.example.backend.skill.SkillEntity;
 import com.example.backend.skill.SkillRepository;
+import com.example.backend.skill.UserSkillEntity;
 import com.example.backend.skill.UserSkillRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
@@ -156,5 +158,36 @@ class AgentTurnServiceTest {
 
         // 默认会话（0）不建表记录：不做会话查询/刷新
         verify(conversationRepository, never()).findById(anyLong());
+    }
+
+    @Test
+    void executeTurn_payloadCarriesSkillTypeToAgent() {
+        when(agentMemoryRepository.findById(any(AgentMemoryId.class))).thenReturn(Optional.empty());
+        when(chatMessageRepository.findTop30ByUserIdAndConversationIdOrderByIdDesc(anyString(), anyLong()))
+                .thenReturn(List.of());
+        UserSkillEntity mount = new UserSkillEntity();
+        mount.setUserId("alice");
+        mount.setSkillName("researcher");
+        when(userSkillRepository.findByUserId("alice")).thenReturn(List.of(mount));
+        SkillEntity skill = new SkillEntity();
+        skill.setName("researcher");
+        skill.setType(SkillEntity.TYPE_AGENT);
+        skill.setToolNamesJson("[\"webSearchTools\"]");
+        when(skillRepository.findByName("researcher")).thenReturn(Optional.of(skill));
+        stubSaveAssignsIds();
+        when(toolGrantStore.list("alice", 0L)).thenReturn(Set.of());
+        when(agentClient.chat(any())).thenReturn(new AgentClient.AgentChatResult(
+                "回答", null, "t", TraceData.empty()));
+
+        service.executeTurn("alice", 0L, "帮我查资料", List.of(), "t1");
+
+        // type 必须随 payload 下发给 agent，否则 agent 无法判定按子代理装配（整条链路的关键一环）
+        ArgumentCaptor<AgentClient.AgentChatPayload> payload =
+                ArgumentCaptor.forClass(AgentClient.AgentChatPayload.class);
+        verify(agentClient).chat(payload.capture());
+        assertThat(payload.getValue().skills()).hasSize(1);
+        assertThat(payload.getValue().skills().get(0))
+                .containsEntry("name", "researcher")
+                .containsEntry("type", SkillEntity.TYPE_AGENT);
     }
 }

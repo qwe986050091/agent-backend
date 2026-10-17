@@ -4,6 +4,7 @@ import com.example.backend.auth.AuthInterceptor;
 import com.example.backend.user.UserEntity;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.mock.web.MockHttpServletRequest;
@@ -18,6 +19,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
@@ -199,6 +201,40 @@ class SkillControllerUploadTest {
 
         assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
         assertThat(body(resp)).containsEntry("code", "NOT_DELETABLE");
+    }
+
+    // ==================== 技能类型（Agent-as-Tool） ====================
+
+    @Test
+    void listIncludesSkillTypeWithToolDefault() {
+        when(skillService.mountedNames("u1")).thenReturn(Set.of());
+        SkillEntity agentSkill = entity("researcher", "[]", false, "u1");
+        agentSkill.setType(SkillEntity.TYPE_AGENT);
+        SkillEntity plain = entity("report", "[]", false, "u1"); // 未设 type → 兜底 tool
+        when(skillService.listAll()).thenReturn(List.of(agentSkill, plain));
+
+        ResponseEntity<?> resp = controller.list(requestAs("u1"));
+
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> items = (List<Map<String, Object>>) body(resp).get("skills");
+        assertThat(items.get(0)).containsEntry("type", SkillEntity.TYPE_AGENT);
+        assertThat(items.get(1)).containsEntry("type", SkillEntity.TYPE_TOOL);
+    }
+
+    @Test
+    void uploadJsonPassesAgentTypeThrough() {
+        SkillEntity entity = new SkillEntity();
+        entity.setName("researcher");
+        entity.setType(SkillEntity.TYPE_AGENT);
+        when(skillService.upload(any(), anyString())).thenReturn(entity);
+
+        ResponseEntity<?> resp = controller.uploadJson(
+                new SkillUploadRequest("researcher", null, null, null, List.of(), "agent"), requestAs("u1"));
+
+        assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.OK);
+        ArgumentCaptor<SkillUploadRequest> captor = ArgumentCaptor.forClass(SkillUploadRequest.class);
+        verify(skillService).upload(captor.capture(), anyString());
+        assertThat(captor.getValue().type()).isEqualTo("agent");
     }
 
     // ==================== 夹具 ====================

@@ -87,6 +87,7 @@ public class SkillService {
         } catch (Exception e) {
             entity.setToolNamesJson("[]");
         }
+        entity.setType(normalizeSkillType(req.type()));
         entity.setBuiltin(false);
         entity.setCreatedBy(uploader);
         skillRepository.save(entity);
@@ -209,7 +210,22 @@ public class SkillService {
         e.setBuiltin(true);
         e.setCreatedBy("system");
         e.setToolNamesJson("[]");
+        e.setType(SkillEntity.TYPE_TOOL);
         return e;
+    }
+
+    /**
+     * 归一化技能类型：null/空白 → tool；仅接受 tool/agent，其余抛异常（数据不一致要暴露，不静默降级）。
+     */
+    static String normalizeSkillType(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return SkillEntity.TYPE_TOOL;
+        }
+        String type = raw.trim().toLowerCase(java.util.Locale.ROOT);
+        if (!SkillEntity.TYPE_TOOL.equals(type) && !SkillEntity.TYPE_AGENT.equals(type)) {
+            throw new IllegalArgumentException("Skill type 仅支持 tool/agent，收到: " + raw);
+        }
+        return type;
     }
 
     private static String rootMessage(Throwable e) {

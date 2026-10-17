@@ -60,6 +60,7 @@ public class SkillController {
             item.put("createdBy", entity.getCreatedBy());
             item.put("mounted", mounted.contains(entity.getName()));
             item.put("toolNames", parseToolNames(entity.getToolNamesJson()));
+            item.put("type", entity.getType());
             return item;
         }).toList();
 

@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS skill (
     detailed_description TEXT                 DEFAULT NULL COMMENT '详细描述',
     system_prompt       TEXT                  DEFAULT NULL COMMENT '系统提示词片段',
     tool_names_json     VARCHAR(500)          DEFAULT '[]' COMMENT '引用的内置 Tool 名称 JSON 数组',
+    type                VARCHAR(20)  NOT NULL DEFAULT 'tool' COMMENT '技能类型：tool（普通技能包）| agent（子代理：独立循环+私有工具）',
     builtin             TINYINT(1)   NOT NULL DEFAULT 0 COMMENT '是否内置技能（1 内置不可删）',
     created_by          VARCHAR(100)          DEFAULT NULL COMMENT '上传者用户名（内置为 system）',
     created_at          DATETIME              DEFAULT NULL COMMENT '创建时间',
@@ -290,4 +291,7 @@ CREATE TABLE IF NOT EXISTS user_notification (
 --
 -- 子代理嵌套归属（Agent-as-Tool）：tool_call_record 加列，已存在的库需执行一次：
 -- ALTER TABLE tool_call_record ADD COLUMN agent_id VARCHAR(100) NULL COMMENT '发起该工具调用的 Agent：NULL=主 Agent，非空=子代理技能名' AFTER tool_name;
+--
+-- 技能类型（Agent-as-Tool）：skill 加列，已存在的库需执行一次（存量行会回填默认值 'tool'）：
+-- ALTER TABLE skill ADD COLUMN type VARCHAR(20) NOT NULL DEFAULT 'tool' COMMENT '技能类型：tool|agent' AFTER tool_names_json;
 -- ============================================================

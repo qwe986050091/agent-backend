@@ -115,6 +115,41 @@ class SkillServiceUploadTest {
         assertThat(saved.getCreatedBy()).isEqualTo("u2");
     }
 
+    // ==================== 上传：技能类型（Agent-as-Tool） ====================
+
+    @Test
+    void typeDefaultsToToolWhenAbsent() {
+        when(skillRepository.findByName("x")).thenReturn(Optional.empty());
+
+        SkillEntity saved = service.upload(
+                new SkillUploadRequest("x", null, null, null, null, null), "u1");
+
+        assertThat(saved.getType()).isEqualTo(SkillEntity.TYPE_TOOL);
+    }
+
+    @Test
+    void agentTypeIsPersisted() {
+        when(skillRepository.findByName("researcher")).thenReturn(Optional.empty());
+
+        SkillEntity saved = service.upload(new SkillUploadRequest(
+                "researcher", "研究", "详述", "你是研究员", List.of("webSearchTools"), "agent"), "u1");
+
+        assertThat(saved.getType()).isEqualTo(SkillEntity.TYPE_AGENT);
+        assertThat(saved.getToolNamesJson()).isEqualTo("[\"webSearchTools\"]");
+    }
+
+    @Test
+    void unknownTypeIsRejectedBeforePersisting() {
+        when(skillRepository.findByName("x")).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> service.upload(
+                new SkillUploadRequest("x", null, null, null, null, "robot"), "u1"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("tool/agent");
+
+        verify(skillRepository, never()).save(any());
+    }
+
     // ==================== 挂载 / 卸载 / 删除 ====================
 
     @Test
