@@ -145,6 +145,7 @@ CREATE TABLE IF NOT EXISTS tool_call_record (
     conversation_id BIGINT       NOT NULL DEFAULT 0 COMMENT '所属会话',
     round_seq       INT          NOT NULL DEFAULT 0 COMMENT '发生在第几个 LLM 轮次',
     tool_name       VARCHAR(100) NOT NULL COMMENT '工具方法名',
+    agent_id        VARCHAR(100)          DEFAULT NULL COMMENT '发起该工具调用的 Agent：NULL=主 Agent，非空=子代理技能名（Agent-as-Tool 归属）',
     arguments       TEXT                  DEFAULT NULL COMMENT '参数 JSON（agent 侧截断 500）',
     result_preview  VARCHAR(1000)         DEFAULT NULL COMMENT '结果文本预览（成功；截断 300）',
     success         TINYINT(1)   NOT NULL DEFAULT 1 COMMENT '是否成功',
@@ -286,4 +287,7 @@ CREATE TABLE IF NOT EXISTS user_notification (
 -- 本地与生产均需执行一次（P2-10）：
 -- ALTER TABLE chat_message ADD COLUMN trace_id VARCHAR(64) NULL COMMENT '全链路 traceId' AFTER id;
 -- CREATE INDEX idx_chat_message_trace ON chat_message (trace_id);
+--
+-- 子代理嵌套归属（Agent-as-Tool）：tool_call_record 加列，已存在的库需执行一次：
+-- ALTER TABLE tool_call_record ADD COLUMN agent_id VARCHAR(100) NULL COMMENT '发起该工具调用的 Agent：NULL=主 Agent，非空=子代理技能名' AFTER tool_name;
 -- ============================================================

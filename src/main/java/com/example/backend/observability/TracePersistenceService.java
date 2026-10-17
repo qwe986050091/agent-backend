@@ -144,6 +144,7 @@ public class TracePersistenceService {
             row.setConversationId(conversationId == null ? 0L : conversationId);
             row.setRoundSeq(t.round());
             row.setToolName(t.name());
+            row.setAgentId(t.agentId());
             row.setArguments(t.arguments());
             row.setResultPreview(t.result());
             row.setSuccess(t.success());

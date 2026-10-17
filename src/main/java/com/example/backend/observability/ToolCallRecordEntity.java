@@ -36,6 +36,10 @@ public class ToolCallRecordEntity {
     @Column(name = "tool_name", nullable = false, length = 100)
     private String toolName;
 
+    /** 发起该工具调用的 Agent 归属：null=主 Agent（顶层），非空=子代理技能名 */
+    @Column(name = "agent_id", length = 100)
+    private String agentId;
+
     @Column(columnDefinition = "TEXT")
     private String arguments;
 
@@ -73,6 +77,8 @@ public class ToolCallRecordEntity {
     public void setRoundSeq(Integer roundSeq) { this.roundSeq = roundSeq; }
     public String getToolName() { return toolName; }
     public void setToolName(String toolName) { this.toolName = toolName; }
+    public String getAgentId() { return agentId; }
+    public void setAgentId(String agentId) { this.agentId = agentId; }
     public String getArguments() { return arguments; }
     public void setArguments(String arguments) { this.arguments = arguments; }
     public String getResultPreview() { return resultPreview; }

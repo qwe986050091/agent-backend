@@ -59,7 +59,8 @@ public class TraceQueryController {
         for (ToolCallRecordEntity t : tracePersistenceService.findTools(traceId)) {
             tools.add(new ToolData(t.getRoundSeq(), null, t.getToolName(), t.getArguments(),
                     t.getResultPreview(), Boolean.TRUE.equals(t.getSuccess()),
-                    t.getErrorMessage(), t.getDurationMs() == null ? 0L : t.getDurationMs()));
+                    t.getErrorMessage(), t.getDurationMs() == null ? 0L : t.getDurationMs(),
+                    t.getAgentId()));
         }
 
         // 片段行按 query 分组还原 RagData（保持落库顺序）；miss 行（无片段字段）产生空 segments 组
