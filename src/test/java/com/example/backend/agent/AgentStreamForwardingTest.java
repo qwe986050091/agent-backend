@@ -143,6 +143,28 @@ class AgentStreamForwardingTest {
     }
 
     @Test
+    void delegationEventIsForwardedAndAccumulated() {
+        RecordingSseEmitter emitter = new RecordingSseEmitter();
+        AgentClient.TraceAccumulator trace = new AgentClient.TraceAccumulator();
+
+        assertThatCode(() -> {
+            client.dispatchEvent("delegation",
+                    "{\"id\":\"p1\",\"agent\":\"planner\",\"success\":true,\"durationMs\":120,\"tokens\":300}",
+                    new StringBuilder(), new String[]{null}, emitter, trace);
+            client.dispatchEvent("delegation",
+                    "{\"id\":\"s1\",\"agent\":\"executor\",\"parentId\":\"p1\",\"success\":true,"
+                            + "\"durationMs\":80,\"tokens\":150}",
+                    new StringBuilder(), new String[]{null}, emitter, trace);
+        }).doesNotThrowAnyException();
+
+        assertThat(emitter.flat()).contains("event:delegation");
+        TraceData snapshot = trace.snapshot();
+        assertThat(snapshot.delegations()).hasSize(2);
+        assertThat(snapshot.delegations().get(1).agent()).isEqualTo("executor");
+        assertThat(snapshot.delegations().get(1).parentId()).isEqualTo("p1");
+    }
+
+    @Test
     void usageEventIsForwardedWithCostEnrichment() {
         RecordingSseEmitter emitter = new RecordingSseEmitter();
         AgentClient.TraceAccumulator trace = new AgentClient.TraceAccumulator();
