@@ -2,14 +2,14 @@ package com.example.backend.chat;
 
 import com.example.backend.agent.AgentClient;
 import com.example.backend.approval.ToolGrantStore;
-import com.example.backend.common.TraceMdcFilter;
+import com.example.backend.mq.EventPublisher;
+import com.example.backend.mq.event.ConversationIndexEvent;
 import com.example.backend.observability.TracePersistenceService;
 import com.example.backend.skill.SkillEntity;
 import com.example.backend.skill.SkillRepository;
 import com.example.backend.skill.UserSkillEntity;
 import com.example.backend.skill.UserSkillRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -22,11 +22,6 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.RejectedExecutionException;
-import java.util.concurrent.ThreadPoolExecutor;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * 对话回合管线（M1a 从 ChatController 平移抽取，零行为变更）。
@@ -47,27 +42,6 @@ public class AgentTurnService {
     /** 下发给 agent 重建记忆的最近历史消息条数（agent 侧压缩阈值 40 / 保留 20） */
     private static final int HISTORY_LIMIT = 30;
 
-    private static final AtomicInteger THREAD_SEQ = new AtomicInteger();
-
-    /**
-     * RAG 异步索引工作线程池（best-effort，独立于 SSE 流池，避免索引占用长连接工作线程）。
-     * 有界：core 2 / max 4 / 队列 200，满载 AbortPolicy 拒绝（丢弃本条索引，不影响聊天主链路）。
-     */
-    private final ThreadPoolExecutor indexExecutor = new ThreadPoolExecutor(
-            2, 4, 60L, TimeUnit.SECONDS,
-            new LinkedBlockingQueue<>(200),
-            r -> {
-                Thread t = new Thread(r, "turn-index-" + THREAD_SEQ.incrementAndGet());
-                t.setDaemon(true);
-                return t;
-            },
-            new ThreadPoolExecutor.AbortPolicy());
-
-    @PreDestroy
-    void shutdownExecutor() {
-        indexExecutor.shutdown();
-    }
-
     private final ChatMessageRepository chatMessageRepository;
     private final AgentMemoryRepository agentMemoryRepository;
     private final ConversationRepository conversationRepository;
@@ -77,6 +51,7 @@ public class AgentTurnService {
     private final ToolGrantStore toolGrantStore;
     private final AgentClient agentClient;
     private final TracePersistenceService tracePersistenceService;
+    private final EventPublisher eventPublisher;
     private final ObjectMapper objectMapper;
 
     public AgentTurnService(ChatMessageRepository chatMessageRepository,
@@ -88,6 +63,7 @@ public class AgentTurnService {
                             ToolGrantStore toolGrantStore,
                             AgentClient agentClient,
                             TracePersistenceService tracePersistenceService,
+                            EventPublisher eventPublisher,
                             ObjectMapper objectMapper) {
         this.chatMessageRepository = chatMessageRepository;
         this.agentMemoryRepository = agentMemoryRepository;
@@ -98,6 +74,7 @@ public class AgentTurnService {
         this.toolGrantStore = toolGrantStore;
         this.agentClient = agentClient;
         this.tracePersistenceService = tracePersistenceService;
+        this.eventPublisher = eventPublisher;
         this.objectMapper = objectMapper;
     }
 
@@ -302,20 +279,12 @@ public class AgentTurnService {
     }
 
     /**
-     * 异步把一条对话索引到 agent 侧向量库（RAG 长期记忆），异常不抛出；traceId 随 MDC 交接。
-     * 线程池满拒绝也必须吞掉：best-effort 索引不能反噬对话主链路（FR-4.3）。
+     * 把一条对话投递到索引队列（P1-E）：由 MQ 消费者异步写入 agent 侧向量库。
+     *
+     * 与改造前的区别：进程重启不再丢任务、agent 短暂不可用可重试；
+     * 投递失败由 EventPublisher 回退本地分发，任何异常都不反噬聊天主链路（FR-4.3）。
      */
     private void indexConversationAsync(String userId, String role, String content) {
-        try {
-            indexExecutor.execute(TraceMdcFilter.wrapWithMdc(() -> {
-                try {
-                    agentClient.indexConversation(userId, role, content);
-                } catch (Exception e) {
-                    log.warn("[Chat] 对话 RAG 索引失败（不影响聊天）: {}", e.getMessage());
-                }
-            }));
-        } catch (RejectedExecutionException e) {
-            log.warn("[Chat] RAG 索引线程池已满，跳过本条长期记忆索引（不影响聊天）");
-        }
+        eventPublisher.publish(new ConversationIndexEvent(userId, role, content), userId);
     }
 }

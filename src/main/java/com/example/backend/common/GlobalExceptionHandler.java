@@ -61,6 +61,18 @@ public class GlobalExceptionHandler {
                         ? "消息未通过内容安全检查，请调整后重试" : message));
     }
 
+    /**
+     * SSE 客户端断开（P1-E）：长连接在浏览器关闭/切换页面时被中断，
+     * 此时响应已不可写，不能再走 JSON 兜底（会二次报 HttpMessageNotWritable）。
+     * 直接返回空 4xx，不打印 ERROR 日志，避免正常断连刷屏。
+     */
+    @ExceptionHandler(org.springframework.web.context.request.async.AsyncRequestNotUsableException.class)
+    public ResponseEntity<Void> handleAsyncNotUsable(
+            org.springframework.web.context.request.async.AsyncRequestNotUsableException e) {
+        log.debug("[GlobalExceptionHandler] SSE 客户端已断开: {}", e.getMessage());
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).build();
+    }
+
     /** 兜底：未预期异常 */
     @ExceptionHandler(Exception.class)
     public ResponseEntity<Map<String, Object>> handleException(Exception e) {

@@ -119,6 +119,18 @@ app:
   # 留空=一律拒绝（fail-closed）。生产须与 agent 侧 eval.persist-token 一致。
   eval:
     ingest-token: ${EVAL_INGEST_TOKEN:dev-internal-token}
+  # ===== 消息总线（P1-E）=====
+  # type: none=进程内线程池（默认，等价改造前）| redis=Redis Streams | rocketmq=RocketMQ 5.x
+  # 生产：rocketmq，NameServer 在 JD 备机，经 SSH 隧道映射到本机 127.0.0.1:9876
+  mq:
+    type: ${APP_MQ_TYPE:none}
+    topic-prefix: app-
+    consumer-group: agent-backend
+    stream-prefix: "app-event:"
+    max-len: 20000
+    poll-interval-ms: 500
+    rocketmq:
+      namesrv: ${ROCKETMQ_NAMESRV:127.0.0.1:9876}
   # ===== 对话图片（P1-8 多模态，deepseek-flash 原生视觉） =====
   chat:
     image:

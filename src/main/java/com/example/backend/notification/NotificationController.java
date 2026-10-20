@@ -3,7 +3,9 @@ package com.example.backend.notification;
 import com.example.backend.auth.AuthInterceptor;
 import com.example.backend.user.UserEntity;
 import jakarta.servlet.http.HttpServletRequest;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -27,9 +29,21 @@ import java.util.Map;
 public class NotificationController {
 
     private final NotificationService notificationService;
+    private final NotificationStreamService streamService;
 
-    public NotificationController(NotificationService notificationService) {
+    public NotificationController(NotificationService notificationService,
+                                  NotificationStreamService streamService) {
         this.notificationService = notificationService;
+        this.streamService = streamService;
+    }
+
+    /**
+     * 实时通知流（P1-E，SSE）：连接建立后服务端主动推送新通知，
+     * 前端保留游标轮询作为断线/离线的补齐兜底。
+     */
+    @GetMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public SseEmitter stream(HttpServletRequest request) {
+        return streamService.subscribe(currentUser(request));
     }
 
     @GetMapping

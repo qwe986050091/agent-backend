@@ -5,6 +5,8 @@ import com.example.backend.agent.trace.TraceData;
 import com.example.backend.chat.AgentTurnService;
 import com.example.backend.chat.ConversationEntity;
 import com.example.backend.chat.ConversationRepository;
+import com.example.backend.mq.EventPublisher;
+import com.example.backend.mq.event.NotificationCreatedEvent;
 import com.example.backend.notification.NotificationService;
 import com.example.backend.ratelimit.RateLimitService;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -46,6 +48,7 @@ class TaskRunnerTest {
     @Mock private AgentTurnService turnService;
     @Mock private RateLimitService rateLimitService;
     @Mock private NotificationService notificationService;
+    @Mock private EventPublisher eventPublisher;
     @Mock private StringRedisTemplate redis;
     @Mock private ValueOperations<String, String> valueOps;
 
@@ -56,7 +59,8 @@ class TaskRunnerTest {
     void setUp() {
         props = new TaskProperties();
         runner = new TaskRunner(props, taskRepository, runRepository, conversationRepository,
-                turnService, rateLimitService, notificationService, redis, new ObjectMapper());
+                turnService, rateLimitService, notificationService, eventPublisher, redis,
+                new ObjectMapper());
     }
 
     private static ScheduledTaskEntity task(Long id, String userId) {
@@ -92,7 +96,7 @@ class TaskRunnerTest {
         assertThat(runs.getValue().getStatus()).isEqualTo(ScheduledTaskRunEntity.STATUS_SKIPPED_BUDGET);
         assertThat(runs.getValue().getErrorMessage()).contains("预算");
         assertThat(runs.getValue().getAssistantMessageId()).isNull();
-        verifyNoInteractions(turnService, conversationRepository, notificationService);
+        verifyNoInteractions(turnService, conversationRepository, notificationService, eventPublisher);
     }
 
     @Test
@@ -119,6 +123,10 @@ class TaskRunnerTest {
         ScheduledTaskEntity fresh = task(3L, "alice");
         when(taskRepository.findById(3L)).thenReturn(Optional.of(fresh));
 
+        // 通知载荷由 NotificationService 构造；MQ 消费者负责落库 + SSE 推送
+        when(notificationService.taskResultEvent("alice", "早报", "回答", 5L))
+                .thenReturn(new NotificationCreatedEvent("alice", "task_result", "标题", "摘要", 5L));
+
         runner.doRun(task);
 
         // 执行记录：先 running 后 success（同一实体两阶段收尾）
@@ -142,8 +150,8 @@ class TaskRunnerTest {
         assertThat(fresh.getNextRunAt()).isNotNull();
         verify(taskRepository).save(fresh);
 
-        // [M2] 成功后写站内通知（任务名 + 回答摘要 + 专属会话）
-        verify(notificationService).notifyTaskResult("alice", "早报", "回答", 5L);
+        // [M2/P1-E] 成功后投递通知事件（由 MQ 消费者落库 + SSE 推送）
+        verify(eventPublisher).publish(any(NotificationCreatedEvent.class), eq("alice"));
     }
 
     @Test
@@ -166,8 +174,9 @@ class TaskRunnerTest {
         assertThat(finished.getStatus()).isEqualTo(ScheduledTaskRunEntity.STATUS_FAILED);
         assertThat(finished.getErrorMessage()).contains("熔断");
         assertThat(finished.getAssistantMessageId()).isNull();
-        // 失败不写通知
-        verify(notificationService, never()).notifyTaskResult(anyString(), anyString(), any(), any());
+        // 失败不投递通知事件
+        verify(eventPublisher, never()).publish(any(), anyString());
+        verify(notificationService, never()).taskResultEvent(anyString(), anyString(), any(), any());
     }
 
     @Test

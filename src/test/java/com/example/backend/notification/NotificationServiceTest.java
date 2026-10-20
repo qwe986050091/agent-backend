@@ -38,8 +38,8 @@ class NotificationServiceTest {
     }
 
     @Test
-    void notifyTaskResult_savesWithSummarizedBody() {
-        service.notifyTaskResult("alice", "早报", "第一行\n第二行   有   空白", 5L);
+    void saveTaskResultEvent_persistsSummarizedBody() {
+        service.save(service.taskResultEvent("alice", "早报", "第一行\n第二行   有   空白", 5L));
 
         ArgumentCaptor<UserNotificationEntity> saved = ArgumentCaptor.forClass(UserNotificationEntity.class);
         verify(repository).save(saved.capture());
@@ -53,8 +53,8 @@ class NotificationServiceTest {
     }
 
     @Test
-    void notifyTaskResult_truncatesLongAnswerTo120() {
-        service.notifyTaskResult("alice", "早报", "x".repeat(500), 5L);
+    void saveTaskResultEvent_truncatesLongAnswerTo120() {
+        service.save(service.taskResultEvent("alice", "早报", "x".repeat(500), 5L));
 
         ArgumentCaptor<UserNotificationEntity> saved = ArgumentCaptor.forClass(UserNotificationEntity.class);
         verify(repository).save(saved.capture());
@@ -62,8 +62,8 @@ class NotificationServiceTest {
     }
 
     @Test
-    void notifyTaskResult_blankAnswer_usesFallbackText() {
-        service.notifyTaskResult("alice", "早报", "   ", 5L);
+    void saveTaskResultEvent_blankAnswer_usesFallbackText() {
+        service.save(service.taskResultEvent("alice", "早报", "   ", 5L));
 
         ArgumentCaptor<UserNotificationEntity> saved = ArgumentCaptor.forClass(UserNotificationEntity.class);
         verify(repository).save(saved.capture());
@@ -71,12 +71,15 @@ class NotificationServiceTest {
     }
 
     @Test
-    void notifyTaskResult_repositoryFailure_isSwallowed() {
+    void saveTaskResultEvent_repositoryFailure_propagatesForMqRetry() {
         when(repository.save(any(UserNotificationEntity.class)))
                 .thenThrow(new RuntimeException("db down"));
 
-        // best-effort：不得把异常抛回任务执行主链路
-        service.notifyTaskResult("alice", "早报", "回答", 5L);
+        // P1-E：落库失败必须抛出，MQ 消费者据此重投；任务主链路已先投递、不受影响
+        org.assertj.core.api.Assertions.assertThatThrownBy(
+                () -> service.save(service.taskResultEvent("alice", "早报", "回答", 5L)))
+                .isInstanceOf(RuntimeException.class)
+                .hasMessageContaining("db down");
     }
 
     @Test

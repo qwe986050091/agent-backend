@@ -1,5 +1,6 @@
 package com.example.backend.notification;
 
+import com.example.backend.mq.event.NotificationCreatedEvent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.PageRequest;
@@ -35,21 +36,31 @@ public class NotificationService {
     }
 
     /**
-     * 任务执行成功通知（M2 唯一写点）。
-     * best-effort：任何异常只记日志，不影响任务执行结果。
+     * 由通知事件落库（P1-E：MQ 消费者调用；异常向上抛出由 MQ 重投）。
+     *
+     * @return 落库后的实体（含自增 id，供 SSE 推送使用）
      */
-    public void notifyTaskResult(String userId, String taskName, String answer, Long conversationId) {
-        try {
-            UserNotificationEntity notification = new UserNotificationEntity();
-            notification.setUserId(userId);
-            notification.setType(UserNotificationEntity.TYPE_TASK_RESULT);
-            notification.setTitle(truncate("定时任务「" + taskName + "」已完成", 200));
-            notification.setBody(summarize(answer));
-            notification.setTargetConversationId(conversationId);
-            repository.save(notification);
-        } catch (Exception e) {
-            log.warn("[Notification] 任务结果通知落库失败（不影响任务）: {}", e.getMessage());
-        }
+    public UserNotificationEntity save(NotificationCreatedEvent event) {
+        UserNotificationEntity notification = new UserNotificationEntity();
+        notification.setUserId(event.userId());
+        notification.setType(event.type() == null ? UserNotificationEntity.TYPE_TASK_RESULT : event.type());
+        notification.setTitle(truncate(event.title(), 200));
+        notification.setBody(truncate(event.body(), 500));
+        notification.setTargetConversationId(event.targetConversationId());
+        return repository.save(notification);
+    }
+
+    /**
+     * 任务执行成功通知的载荷构造（P1-E：不再直接落库，交给 MQ 异步处理）。
+     */
+    public NotificationCreatedEvent taskResultEvent(String userId, String taskName,
+                                                    String answer, Long conversationId) {
+        return new NotificationCreatedEvent(
+                userId,
+                UserNotificationEntity.TYPE_TASK_RESULT,
+                truncate("定时任务「" + taskName + "」已完成", 200),
+                summarize(answer),
+                conversationId);
     }
 
     /** 游标拉取（afterId 缺省 0 = 从头；limit 收敛到 [1, 50]） */

@@ -65,6 +65,13 @@
             <artifactId>spring-boot-starter-data-redis</artifactId>
         </dependency>
 
+        <!-- RocketMQ 5.x 客户端（P1-E）：生产消息总线；app.mq.type=rocketmq 时才装配 -->
+        <dependency>
+            <groupId>org.apache.rocketmq</groupId>
+            <artifactId>rocketmq-client</artifactId>
+            <version>5.3.1</version>
+        </dependency>
+
         <!-- Resilience4j：backend → agent 调用的熔断器 + 重试（编程式装配，不引 starter/AOP） -->
         <dependency>
             <groupId>io.github.resilience4j</groupId>

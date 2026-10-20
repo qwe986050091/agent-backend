@@ -3,6 +3,7 @@ package com.example.backend.task;
 import com.example.backend.chat.AgentTurnService;
 import com.example.backend.chat.ConversationEntity;
 import com.example.backend.chat.ConversationRepository;
+import com.example.backend.mq.EventPublisher;
 import com.example.backend.notification.NotificationService;
 import com.example.backend.ratelimit.RateLimitService;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -66,6 +67,7 @@ public class TaskRunner {
     private final AgentTurnService turnService;
     private final RateLimitService rateLimitService;
     private final NotificationService notificationService;
+    private final EventPublisher eventPublisher;
     private final StringRedisTemplate redis;
     private final ObjectMapper objectMapper;
 
@@ -82,6 +84,7 @@ public class TaskRunner {
                       AgentTurnService turnService,
                       RateLimitService rateLimitService,
                       NotificationService notificationService,
+                      EventPublisher eventPublisher,
                       StringRedisTemplate redis,
                       ObjectMapper objectMapper) {
         this.props = props;
@@ -91,6 +94,7 @@ public class TaskRunner {
         this.turnService = turnService;
         this.rateLimitService = rateLimitService;
         this.notificationService = notificationService;
+        this.eventPublisher = eventPublisher;
         this.redis = redis;
         this.objectMapper = objectMapper;
         int max = Math.max(1, props.getMaxConcurrentRuns());
@@ -214,10 +218,11 @@ public class TaskRunner {
                 log.warn("[TaskRunner] 任务 {}（{}）执行失败: {}", task.getId(), task.getName(), e.getMessage());
             }
 
-            // 5. [M2] 成功后写站内通知（在结果落库之外：通知 best-effort，绝不改写执行状态）
+            // 5. [M2/P1-E] 成功后投递站内通知事件（异步落库 + SSE 推送；通知失败不改写执行状态）
             if (ScheduledTaskRunEntity.STATUS_SUCCESS.equals(run.getStatus())) {
-                notificationService.notifyTaskResult(
-                        task.getUserId(), task.getName(), answer, conversationId);
+                eventPublisher.publish(notificationService.taskResultEvent(
+                        task.getUserId(), task.getName(), answer, conversationId),
+                        task.getUserId());
             }
         } finally {
             // 6. 收尾：last_run_at + next_run_at 用执行结束时刻重算（执行期间错过的点不补跑）

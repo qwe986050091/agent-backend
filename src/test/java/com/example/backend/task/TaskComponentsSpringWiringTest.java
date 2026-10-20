@@ -2,7 +2,11 @@ package com.example.backend.task;
 
 import com.example.backend.chat.AgentTurnService;
 import com.example.backend.chat.ConversationRepository;
+import com.example.backend.mq.EventBus;
+import com.example.backend.mq.EventHandlerRegistry;
+import com.example.backend.mq.EventPublisher;
 import com.example.backend.notification.NotificationController;
+import com.example.backend.notification.NotificationStreamService;
 import com.example.backend.notification.NotificationService;
 import com.example.backend.notification.UserNotificationRepository;
 import com.example.backend.ratelimit.RateLimitService;
@@ -15,6 +19,8 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.context.support.PropertySourcesPlaceholderConfigurer;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.scheduling.annotation.EnableScheduling;
+
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -109,10 +115,10 @@ class TaskComponentsSpringWiringTest {
         TaskRunner taskRunner(TaskProperties props, ScheduledTaskRepository tasks,
                               ScheduledTaskRunRepository runs, ConversationRepository conversations,
                               AgentTurnService turnService, RateLimitService rateLimitService,
-                              NotificationService notificationService, StringRedisTemplate redis,
-                              ObjectMapper mapper) {
+                              NotificationService notificationService, EventPublisher eventPublisher,
+                              StringRedisTemplate redis, ObjectMapper mapper) {
             return new TaskRunner(props, tasks, runs, conversations, turnService,
-                    rateLimitService, notificationService, redis, mapper);
+                    rateLimitService, notificationService, eventPublisher, redis, mapper);
         }
 
         @Bean
@@ -127,8 +133,35 @@ class TaskComponentsSpringWiringTest {
         }
 
         @Bean
-        NotificationController notificationController(NotificationService service) {
-            return new NotificationController(service);
+        NotificationStreamService notificationStreamService() {
+            return new NotificationStreamService();
+        }
+
+        @Bean
+        NotificationController notificationController(NotificationService service,
+                                                      NotificationStreamService streamService) {
+            return new NotificationController(service, streamService);
+        }
+
+        @Bean
+        EventPublisher eventPublisher(EventHandlerRegistry registry, ObjectMapper mapper) {
+            return new EventPublisher(new EventBus() {
+                @Override
+                public String name() {
+                    return "test";
+                }
+
+                @Override
+                public void publish(String topic, String key, String payload) {
+                    // 测试装配：同步分发
+                    registry.dispatch(topic, payload);
+                }
+            }, registry, mapper);
+        }
+
+        @Bean
+        EventHandlerRegistry eventHandlerRegistry() {
+            return new EventHandlerRegistry(List.of(), new ObjectMapper());
         }
     }
 }

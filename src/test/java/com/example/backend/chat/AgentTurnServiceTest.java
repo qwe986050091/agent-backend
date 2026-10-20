@@ -3,6 +3,7 @@ package com.example.backend.chat;
 import com.example.backend.agent.AgentClient;
 import com.example.backend.agent.trace.TraceData;
 import com.example.backend.approval.ToolGrantStore;
+import com.example.backend.mq.EventPublisher;
 import com.example.backend.observability.TracePersistenceService;
 import com.example.backend.skill.SkillEntity;
 import com.example.backend.skill.SkillRepository;
@@ -48,6 +49,7 @@ class AgentTurnServiceTest {
     @Mock private ToolGrantStore toolGrantStore;
     @Mock private AgentClient agentClient;
     @Mock private TracePersistenceService tracePersistenceService;
+    @Mock private EventPublisher eventPublisher;
 
     private AgentTurnService service;
 
@@ -56,7 +58,7 @@ class AgentTurnServiceTest {
         service = new AgentTurnService(chatMessageRepository, agentMemoryRepository,
                 conversationRepository, userSkillRepository, skillRepository,
                 attachmentService, toolGrantStore, agentClient, tracePersistenceService,
-                new ObjectMapper());
+                eventPublisher, new ObjectMapper());
     }
 
     /** 复用既有空历史装配（无摘要、无历史、无技能挂载） */
