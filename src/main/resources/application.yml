@@ -114,6 +114,11 @@ billing:
 app:
   admin:
     usernames: ${APP_ADMIN_USERNAMES:}
+  # ===== Agent 评测上报令牌（P0-B）=====
+  # agent 侧 eval CLI 把评测报告 POST /api/eval/runs 时携带的 X-Eval-Token；
+  # 留空=一律拒绝（fail-closed）。生产须与 agent 侧 eval.persist-token 一致。
+  eval:
+    ingest-token: ${EVAL_INGEST_TOKEN:dev-internal-token}
   # ===== 对话图片（P1-8 多模态，deepseek-flash 原生视觉） =====
   chat:
     image:

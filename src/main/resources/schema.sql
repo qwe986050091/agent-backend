@@ -295,3 +295,75 @@ CREATE TABLE IF NOT EXISTS user_notification (
 -- 技能类型（Agent-as-Tool）：skill 加列，已存在的库需执行一次（存量行会回填默认值 'tool'）：
 -- ALTER TABLE skill ADD COLUMN type VARCHAR(20) NOT NULL DEFAULT 'tool' COMMENT '技能类型：tool|agent' AFTER tool_names_json;
 -- ============================================================
+
+-- ============================================================
+-- P0-B Agent 评测：一次评测运行 / 逐例结果 / 反馈反哺候选用例
+-- （新表，启动即建，无需手工 ALTER；仅存报告而不调 LLM——backend 保持「只经 HTTP 调 agent」的纯净约束）
+-- ============================================================
+
+-- 一次评测运行（聚合指标 + 元信息）；run_id 由评测端生成（时间戳+随机后缀）
+CREATE TABLE IF NOT EXISTS eval_run (
+    id                BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键',
+    run_id            VARCHAR(64)  NOT NULL COMMENT '评测端生成的运行 ID',
+    label             VARCHAR(100)          DEFAULT NULL COMMENT '运行标签（baseline / rerank-on 等，用于对比）',
+    dataset_name      VARCHAR(200)          DEFAULT NULL COMMENT '数据集名',
+    mode              VARCHAR(50)           DEFAULT NULL COMMENT '调用方式：in-process / http',
+    model             VARCHAR(100)          DEFAULT NULL COMMENT '被测模型名',
+    judge_enabled     TINYINT(1)   NOT NULL DEFAULT 0 COMMENT '是否启用 LLM-as-judge',
+    total             INT          NOT NULL DEFAULT 0 COMMENT '用例总数',
+    passed            INT          NOT NULL DEFAULT 0 COMMENT '通过数',
+    failed            INT          NOT NULL DEFAULT 0 COMMENT '失败数',
+    pass_rate         DOUBLE       NOT NULL DEFAULT 0 COMMENT '通过率 0~1',
+    tool_accuracy     DOUBLE                DEFAULT NULL COMMENT '工具选择正确率（无样本为 NULL）',
+    citation_accuracy DOUBLE                DEFAULT NULL COMMENT '引用正确率（无样本为 NULL）',
+    point_coverage    DOUBLE                DEFAULT NULL COMMENT '要点覆盖率（无样本为 NULL）',
+    refusal_rate      DOUBLE                DEFAULT NULL COMMENT '安全拒答率（无样本为 NULL）',
+    avg_tokens        DOUBLE       NOT NULL DEFAULT 0 COMMENT '平均 token',
+    avg_duration_ms   DOUBLE       NOT NULL DEFAULT 0 COMMENT '平均耗时 ms',
+    generated_at      DATETIME              DEFAULT NULL COMMENT '评测端生成时间',
+    created_at        DATETIME              DEFAULT NULL COMMENT '入库时间',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_eval_run_id (run_id),
+    KEY idx_eval_run_created (created_at)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='Agent 评测运行（P0-B）';
+
+-- 一次运行内的逐例结果
+CREATE TABLE IF NOT EXISTS eval_case_result (
+    id              BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键',
+    run_id          VARCHAR(64)  NOT NULL COMMENT '所属运行 ID',
+    case_id         VARCHAR(100) NOT NULL COMMENT '用例 id',
+    category        VARCHAR(30)           DEFAULT NULL COMMENT '用例类别',
+    passed          TINYINT(1)   NOT NULL DEFAULT 0 COMMENT '是否通过',
+    failed_checks   VARCHAR(300)          DEFAULT NULL COMMENT '失败的断言名（逗号分隔）',
+    checks_json     JSON                  DEFAULT NULL COMMENT '全部断言明细',
+    answer_excerpt  VARCHAR(1000)         DEFAULT NULL COMMENT '答案摘要（截断）',
+    actual_tools    VARCHAR(500)          DEFAULT NULL COMMENT '实际调用的工具（逗号分隔）',
+    cited_docs      VARCHAR(500)          DEFAULT NULL COMMENT '引用的文档 docId（逗号分隔）',
+    retrieved_docs  VARCHAR(500)          DEFAULT NULL COMMENT '召回的文档 docId（逗号分隔）',
+    tokens          INT          NOT NULL DEFAULT 0 COMMENT '本回合 token',
+    duration_ms     BIGINT       NOT NULL DEFAULT 0 COMMENT '本回合耗时 ms',
+    created_at      DATETIME              DEFAULT NULL COMMENT '入库时间',
+    PRIMARY KEY (id),
+    KEY idx_eval_case_run (run_id, id)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='Agent 评测逐例结果（P0-B）';
+
+-- 反馈反哺：由点踩反馈生成的评测候选用例（人工确认后再并入数据集）
+CREATE TABLE IF NOT EXISTS eval_candidate (
+    id                 BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键',
+    source             VARCHAR(30)  NOT NULL DEFAULT 'feedback' COMMENT '来源：feedback',
+    trace_id           VARCHAR(64)  NOT NULL COMMENT '来源回合 traceId',
+    user_id            VARCHAR(100) NOT NULL COMMENT '来源用户',
+    question           TEXT                  DEFAULT NULL COMMENT '该回合用户提问',
+    answer             TEXT                  DEFAULT NULL COMMENT '该回合助手回答',
+    reason_code        VARCHAR(50)           DEFAULT NULL COMMENT '点踩原因码',
+    comment            VARCHAR(1000)         DEFAULT NULL COMMENT '用户补充说明',
+    suggested_category VARCHAR(30)  NOT NULL DEFAULT 'plain' COMMENT '建议归类',
+    suggested_points   VARCHAR(500)          DEFAULT NULL COMMENT '建议要点（示意的候选断言）',
+    status             VARCHAR(20)  NOT NULL DEFAULT 'new' COMMENT '状态：new / promoted / dismissed',
+    created_at         DATETIME              DEFAULT NULL COMMENT '创建时间',
+    updated_at         DATETIME              DEFAULT NULL COMMENT '最近更新',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_eval_candidate_trace_user (trace_id, user_id),
+    KEY idx_eval_candidate_status (status, id)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='评测候选用例（反馈反哺，P0-B）';
+
