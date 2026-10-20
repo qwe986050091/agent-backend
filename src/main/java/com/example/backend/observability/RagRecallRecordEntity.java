@@ -30,6 +30,10 @@ public class RagRecallRecordEntity {
     @Column(name = "conversation_id", nullable = false)
     private Long conversationId = 0L;
 
+    /** 发起检索的 Agent：NULL=主 Agent，非空=子代理技能名（P1-C 调用树归属） */
+    @Column(name = "agent_id", length = 100)
+    private String agentId;
+
     @Column(name = "query_text", length = 1000)
     private String queryText;
 
@@ -77,6 +81,8 @@ public class RagRecallRecordEntity {
     public void setUserId(String userId) { this.userId = userId; }
     public Long getConversationId() { return conversationId; }
     public void setConversationId(Long conversationId) { this.conversationId = conversationId; }
+    public String getAgentId() { return agentId; }
+    public void setAgentId(String agentId) { this.agentId = agentId; }
     public String getQueryText() { return queryText; }
     public void setQueryText(String queryText) { this.queryText = queryText; }
     public String getDocId() { return docId; }

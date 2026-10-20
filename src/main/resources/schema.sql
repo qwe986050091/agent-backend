@@ -164,6 +164,7 @@ CREATE TABLE IF NOT EXISTS rag_recall_record (
     trace_id        VARCHAR(64)  NOT NULL COMMENT '全链路 traceId',
     user_id         VARCHAR(100) NOT NULL COMMENT '所属用户（用户名）',
     conversation_id BIGINT       NOT NULL DEFAULT 0 COMMENT '所属会话',
+    agent_id        VARCHAR(100)          DEFAULT NULL COMMENT '发起检索的 Agent：NULL=主 Agent，非空=子代理技能名（P1-C 调用树归属）',
     query_text      VARCHAR(1000)         DEFAULT NULL COMMENT '触发检索的问题（截断 150）',
     doc_id          VARCHAR(64)           DEFAULT NULL COMMENT '文档 id（历史对话片段可能为空）',
     source_name     VARCHAR(255)          DEFAULT NULL COMMENT '来源名（文件名/历史对话）',
@@ -178,6 +179,29 @@ CREATE TABLE IF NOT EXISTS rag_recall_record (
     KEY idx_rag_trace (trace_id),
     KEY idx_rag_user_created (user_id, created_at)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='RAG 召回审计记录表';
+-- 存量库升级（P1-C）：CREATE TABLE IF NOT EXISTS 不会补列，需手工执行一次
+-- ALTER TABLE rag_recall_record ADD COLUMN agent_id VARCHAR(100) DEFAULT NULL
+--   COMMENT '发起检索的 Agent：NULL=主 Agent，非空=子代理技能名' AFTER conversation_id;
+
+-- 子代理委派审计（P1-C）：一次委派一行，parent_delegation_id 还原父子 Agent 调用树
+CREATE TABLE IF NOT EXISTS agent_delegation_record (
+    id                   BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键',
+    trace_id             VARCHAR(64)  NOT NULL COMMENT '全链路 traceId',
+    user_id              VARCHAR(100) NOT NULL COMMENT '所属用户（用户名）',
+    conversation_id      BIGINT       NOT NULL DEFAULT 0 COMMENT '所属会话',
+    delegation_id        VARCHAR(32)  NOT NULL COMMENT '委派节点 id（与 agent trace 一致）',
+    agent_name           VARCHAR(100) NOT NULL COMMENT '子代理技能名；planner=计划编排节点',
+    parent_delegation_id VARCHAR(32)           DEFAULT NULL COMMENT '父委派 id；NULL=主 Agent 直接发起',
+    task_preview         VARCHAR(1000)         DEFAULT NULL COMMENT '交给子代理的子任务指令（截断 300）',
+    success              TINYINT(1)   NOT NULL DEFAULT 1 COMMENT '是否正常返回',
+    error_message        VARCHAR(500)          DEFAULT NULL COMMENT '失败原因',
+    duration_ms          BIGINT       NOT NULL DEFAULT 0 COMMENT '委派耗时 ms',
+    tokens               INT          NOT NULL DEFAULT 0 COMMENT '本次委派消耗 token（0=无法测量）',
+    created_at           DATETIME              DEFAULT NULL COMMENT '创建时间',
+    PRIMARY KEY (id),
+    KEY idx_delegation_trace (trace_id),
+    KEY idx_delegation_user_created (user_id, created_at)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='子代理委派审计记录表（父子 Agent 调用树）';
 
 -- ============================================================
 -- P2-11.1 回答反馈（点赞/点踩 + bad case）

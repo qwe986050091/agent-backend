@@ -1,5 +1,6 @@
 package com.example.backend.agent;
 
+import com.example.backend.agent.trace.DelegationData;
 import com.example.backend.agent.trace.RagData;
 import com.example.backend.agent.trace.SafetyData;
 import com.example.backend.agent.trace.ToolData;
@@ -260,9 +261,14 @@ public class AgentClient {
                     ? List.of()
                     : mapper.convertValue(resp.get("safeties"),
                             mapper.getTypeFactory().constructCollectionType(List.class, SafetyData.class));
+            List<DelegationData> delegations = resp.get("delegations") == null
+                    ? List.of()
+                    : mapper.convertValue(resp.get("delegations"),
+                            mapper.getTypeFactory().constructCollectionType(List.class, DelegationData.class));
             return new TraceData(usage, tools == null ? List.of() : tools,
                     recalls == null ? List.of() : recalls,
-                    safeties == null ? List.of() : safeties);
+                    safeties == null ? List.of() : safeties,
+                    delegations == null ? List.of() : delegations);
         } catch (Exception e) {
             LoggerFactory.getLogger(AgentClient.class)
                     .warn("[AgentClient] trace 数据解析失败（不影响对话）: {}", e.getMessage());
@@ -491,6 +497,15 @@ public class AgentClient {
             forwardNamedEvent(emitter, "rag", data);
             return;
         }
+        if ("delegation".equals(eventName)) {
+            // 子代理委派节点（父子 Agent 调用树）：累积供落库/历史回查，同时透传前端实时建树
+            DelegationData delegation = parseEventData(data, DelegationData.class);
+            if (delegation != null) {
+                trace.delegations.add(delegation);
+            }
+            forwardNamedEvent(emitter, "delegation", data);
+            return;
+        }
         if ("usage".equals(eventName)) {
             UsageData usage = parseEventData(data, UsageData.class);
             if (usage != null) {
@@ -546,6 +561,7 @@ public class AgentClient {
         private final List<ToolData> tools = new ArrayList<>();
         private final List<RagData> recalls = new ArrayList<>();
         private final List<SafetyData> safeties = new ArrayList<>();
+        private final List<DelegationData> delegations = new ArrayList<>();
         private volatile UsageData usage;
 
         /** agent fallback 重放（trace-reset）：清空已累积的首轮数据 */
@@ -553,13 +569,15 @@ public class AgentClient {
             tools.clear();
             recalls.clear();
             safeties.clear();
+            delegations.clear();
             usage = null;
         }
 
         /** 累积快照（包私有以便单测；P2-12） */
         TraceData snapshot() {
             return new TraceData(usage == null ? UsageData.empty() : usage,
-                    List.copyOf(tools), List.copyOf(recalls), List.copyOf(safeties));
+                    List.copyOf(tools), List.copyOf(recalls), List.copyOf(safeties),
+                    List.copyOf(delegations));
         }
     }
 

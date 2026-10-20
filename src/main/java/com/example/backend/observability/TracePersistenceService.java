@@ -1,5 +1,6 @@
 package com.example.backend.observability;
 
+import com.example.backend.agent.trace.DelegationData;
 import com.example.backend.agent.trace.RagData;
 import com.example.backend.agent.trace.RagSegmentData;
 import com.example.backend.agent.trace.SafetyData;
@@ -35,6 +36,7 @@ public class TracePersistenceService {
     private final LlmUsageRecordRepository usageRepository;
     private final ToolCallRecordRepository toolRepository;
     private final RagRecallRecordRepository ragRepository;
+    private final AgentDelegationRecordRepository delegationRepository;
     private final BillingService billingService;
     private final PromptSafetyRepository promptSafetyRepository;
     private final ObjectMapper objectMapper = new ObjectMapper();
@@ -42,11 +44,13 @@ public class TracePersistenceService {
     public TracePersistenceService(LlmUsageRecordRepository usageRepository,
                                    ToolCallRecordRepository toolRepository,
                                    RagRecallRecordRepository ragRepository,
+                                   AgentDelegationRecordRepository delegationRepository,
                                    BillingService billingService,
                                    PromptSafetyRepository promptSafetyRepository) {
         this.usageRepository = usageRepository;
         this.toolRepository = toolRepository;
         this.ragRepository = ragRepository;
+        this.delegationRepository = delegationRepository;
         this.billingService = billingService;
         this.promptSafetyRepository = promptSafetyRepository;
     }
@@ -88,6 +92,8 @@ public class TracePersistenceService {
                     traceData == null ? List.of() : traceData.recalls());
             saveSafetyRows(traceId, userId, conversationId,
                     traceData == null ? List.of() : traceData.safeties());
+            saveDelegationRows(traceId, userId, conversationId,
+                    traceData == null ? List.of() : traceData.delegations());
         } catch (Exception e) {
             // 审计落库失败不影响聊天主流程
             log.warn("[Trace] trace 落库失败（不影响聊天）traceId={}: {}", traceId, e.getMessage());
@@ -105,6 +111,10 @@ public class TracePersistenceService {
 
     public List<RagRecallRecordEntity> findRecalls(String traceId) {
         return ragRepository.findByTraceIdOrderByIdAsc(traceId);
+    }
+
+    public List<AgentDelegationRecordEntity> findDelegations(String traceId) {
+        return delegationRepository.findByTraceIdOrderByIdAsc(traceId);
     }
 
     // ==================== 内部方法 ====================
@@ -170,6 +180,7 @@ public class TracePersistenceService {
                 row.setTraceId(traceId);
                 row.setUserId(userId);
                 row.setConversationId(conversationId == null ? 0L : conversationId);
+                row.setAgentId(blankToNull(rag.agentId()));
                 row.setQueryText(rag.query());
                 row.setScore(0d);
                 row.setSeq(0);
@@ -185,6 +196,7 @@ public class TracePersistenceService {
                 row.setTraceId(traceId);
                 row.setUserId(userId);
                 row.setConversationId(conversationId == null ? 0L : conversationId);
+                row.setAgentId(blankToNull(rag.agentId()));
                 row.setQueryText(rag.query());
                 row.setDocId(seg.docId());
                 row.setSourceName(seg.source());
@@ -197,6 +209,33 @@ public class TracePersistenceService {
                 row.setCreatedAt(LocalDateTime.now());
                 ragRepository.save(row);
             }
+        }
+    }
+
+    /** 子代理委派行（P1-C）：一次委派一行，parent_delegation_id 还原父子 Agent 调用树 */
+    private void saveDelegationRows(String traceId, String userId, Long conversationId,
+                                    List<DelegationData> delegations) {
+        if (delegations == null || delegations.isEmpty()) {
+            return;
+        }
+        for (DelegationData d : delegations) {
+            if (d == null || d.id() == null || d.id().isBlank() || d.agent() == null) {
+                continue;
+            }
+            AgentDelegationRecordEntity row = new AgentDelegationRecordEntity();
+            row.setTraceId(traceId);
+            row.setUserId(userId == null ? "" : userId);
+            row.setConversationId(conversationId == null ? 0L : conversationId);
+            row.setDelegationId(d.id());
+            row.setAgentName(d.agent());
+            row.setParentDelegationId(blankToNull(d.parentId()));
+            row.setTaskPreview(truncate(d.task(), 1000));
+            row.setSuccess(d.success());
+            row.setErrorMessage(truncate(d.error(), 500));
+            row.setDurationMs(Math.max(0L, d.durationMs()));
+            row.setTokens(Math.max(0, d.tokens()));
+            row.setCreatedAt(LocalDateTime.now());
+            delegationRepository.save(row);
         }
     }
 
@@ -274,6 +313,10 @@ public class TracePersistenceService {
 
     private static String blankTo(String v, String fallback) {
         return v == null || v.isBlank() ? fallback : v;
+    }
+
+    private static String blankToNull(String v) {
+        return v == null || v.isBlank() ? null : v;
     }
 
     private static String truncate(String v, int max) {

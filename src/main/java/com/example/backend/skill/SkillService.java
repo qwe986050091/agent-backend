@@ -32,7 +32,40 @@ public class SkillService {
             builtin("calculator", "数学计算技能：加减乘除、幂运算等"),
             builtin("datetime", "时间日期技能：获取当前日期、时间、星期等"),
             builtin("web", "联网助手：联网搜索最新信息、抓取网页正文"),
-            builtin("http-api", "HTTP 请求：调用第三方 HTTP API（高危，每次需确认）"));
+            builtin("http-api", "HTTP 请求：调用第三方 HTTP API（高危，每次需确认）"),
+            // ===== P1-C：三类内置子代理（type=agent，拥有独立推理循环与私有工具） =====
+            builtinAgent("researcher", "检索专家：联网检索与网页正文抓取，按知识库/公开资料给出带来源的事实",
+                    """
+                    你是检索专家，负责为一个子任务收集可靠资料。
+                    工作方式：
+                    1. 先明确需要查证的关键事实，再用 webSearch 搜索、用 fetchWebPage 抓取正文；
+                    2. 优先采用权威来源，交叉核对至少两个来源，冲突时如实说明；
+                    3. 只写有来源支撑的结论，每条结论标注来源（URL 或文档名）；
+                    4. 找不到就明确说「未检索到」，不得编造。
+                    输出：分点列出事实与来源，末尾给出仍不确定的点。
+                    """,
+                    "[\"webSearchTools\",\"webFetchTools\"]"),
+            builtinAgent("executor", "执行专家：按指令调用计算/时间/HTTP 工具完成确定性操作",
+                    """
+                    你是执行专家，负责把子任务里的确定性操作真正做完。
+                    工作方式：
+                    1. 先复述要执行的操作与参数，确认没有歧义；
+                    2. 需要计算用 calculator，需要当前时间用 datetime，需要调外部接口用 HTTP 工具；
+                    3. 严格按工具返回结果作答，不得推测或改写返回值；
+                    4. 工具失败时如实报告错误与可能原因，不要假装成功。
+                    输出：执行结果 + 关键参数 + 失败时的错误摘要。
+                    """,
+                    "[\"calculatorTools\",\"dateTimeTools\",\"httpRequestTools\"]"),
+            builtinAgent("verifier", "校验专家：交叉核对前序结论与来源，判定通过/不通过并给出修正意见",
+                    """
+                    你是校验专家，负责在结论交付前做一次独立复核。
+                    工作方式：
+                    1. 对照目标检查：是否回答了问题、关键结论是否有来源支撑、是否存在自相矛盾或臆造；
+                    2. 只依据给定的材料判断，不引入新的外部事实，也不替执行者补全缺失信息；
+                    3. 回答的第一行必须是「通过」或「不通过」，不得有前缀；
+                    4. 判定「不通过」时，逐条列出问题与可执行的修正建议（指明是哪一步、改成什么）。
+                    """,
+                    "[]"));
 
     private final SkillRepository skillRepository;
     private final UserSkillRepository userSkillRepository;
@@ -211,6 +244,16 @@ public class SkillService {
         e.setCreatedBy("system");
         e.setToolNamesJson("[]");
         e.setType(SkillEntity.TYPE_TOOL);
+        return e;
+    }
+
+    /** 内置子代理（type=agent）：自带系统提示与私有工具，主 Agent 以 delegate_{name} 委派 */
+    private static SkillEntity builtinAgent(String name, String shortDescription,
+                                            String systemPrompt, String toolNamesJson) {
+        SkillEntity e = builtin(name, shortDescription);
+        e.setType(SkillEntity.TYPE_AGENT);
+        e.setSystemPrompt(systemPrompt);
+        e.setToolNamesJson(toolNamesJson);
         return e;
     }
 

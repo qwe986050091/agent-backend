@@ -1,5 +1,6 @@
 package com.example.backend.observability;
 
+import com.example.backend.agent.trace.DelegationData;
 import com.example.backend.agent.trace.RagData;
 import com.example.backend.agent.trace.RagSegmentData;
 import com.example.backend.agent.trace.ToolData;
@@ -63,11 +64,15 @@ public class TraceQueryController {
                     t.getAgentId()));
         }
 
-        // 片段行按 query 分组还原 RagData（保持落库顺序）；miss 行（无片段字段）产生空 segments 组
+        // 片段行按 (query, agentId) 分组还原 RagData（保持落库顺序）；miss 行产生空 segments 组
         Map<String, List<RagSegmentData>> grouped = new LinkedHashMap<>();
+        Map<String, String[]> groupMeta = new LinkedHashMap<>();
         for (RagRecallRecordEntity r : tracePersistenceService.findRecalls(traceId)) {
             String query = r.getQueryText() == null ? "" : r.getQueryText();
-            List<RagSegmentData> segments = grouped.computeIfAbsent(query, k -> new ArrayList<>());
+            String agentId = r.getAgentId();
+            String key = (agentId == null ? "" : agentId) + "\u0000" + query;
+            groupMeta.putIfAbsent(key, new String[]{query, agentId});
+            List<RagSegmentData> segments = grouped.computeIfAbsent(key, k -> new ArrayList<>());
             boolean missRow = r.getSegmentText() == null && r.getDocId() == null
                     && r.getSourceName() == null;
             if (!missRow) {
@@ -78,13 +83,26 @@ public class TraceQueryController {
             }
         }
         List<RagData> recalls = new ArrayList<>();
-        grouped.forEach((query, segments) -> recalls.add(new RagData(query, segments)));
+        grouped.forEach((key, segments) -> {
+            String[] meta = groupMeta.get(key);
+            recalls.add(new RagData(meta[0], segments, meta[1]));
+        });
+
+        List<DelegationData> delegations = new ArrayList<>();
+        for (AgentDelegationRecordEntity d : tracePersistenceService.findDelegations(traceId)) {
+            delegations.add(new DelegationData(
+                    d.getDelegationId(), d.getAgentName(), d.getParentDelegationId(),
+                    d.getTaskPreview(), Boolean.TRUE.equals(d.getSuccess()), d.getErrorMessage(),
+                    d.getDurationMs() == null ? 0L : d.getDurationMs(),
+                    d.getTokens() == null ? 0 : d.getTokens()));
+        }
 
         Map<String, Object> resp = new LinkedHashMap<>();
         resp.put("traceId", traceId);
         resp.put("usage", usage);
         resp.put("tools", tools);
         resp.put("recalls", recalls);
+        resp.put("delegations", delegations);
         return ResponseEntity.ok(resp);
     }
 
