@@ -1,5 +1,6 @@
 package com.example.backend.observability;
 
+import com.example.backend.agent.trace.ContextData;
 import com.example.backend.agent.trace.DelegationData;
 import com.example.backend.agent.trace.RagData;
 import com.example.backend.agent.trace.RagSegmentData;
@@ -85,7 +86,8 @@ public class TracePersistenceService {
             }
             UsageData usage = traceData == null ? UsageData.empty()
                     : (traceData.usage() == null ? UsageData.empty() : traceData.usage());
-            saveUsageRow(traceId, userId, conversationId, assistantMessageId, usage, forceCancelled);
+            saveUsageRow(traceId, userId, conversationId, assistantMessageId, usage, forceCancelled,
+                    traceData == null ? null : traceData.context());
             saveToolRows(traceId, userId, conversationId,
                     traceData == null ? List.of() : traceData.tools());
             saveRagRows(traceId, userId, conversationId,
@@ -105,6 +107,25 @@ public class TracePersistenceService {
         return usageRepository.findByTraceId(traceId);
     }
 
+    /**
+     * 按 traceId 取本轮上下文构成（P1-D 历史回看）。
+     * 老数据/未采集到 context 事件时返回 null；JSON 损坏也只记日志并返回 null，不影响回查。
+     */
+    public ContextData findContext(String traceId) {
+        return usageRepository.findByTraceId(traceId)
+                .map(LlmUsageRecordEntity::getContextJson)
+                .filter(json -> json != null && !json.isBlank())
+                .map(json -> {
+                    try {
+                        return objectMapper.readValue(json, ContextData.class);
+                    } catch (Exception e) {
+                        log.warn("[Trace] context JSON 解析失败（忽略）traceId={}: {}", traceId, e.getMessage());
+                        return null;
+                    }
+                })
+                .orElse(null);
+    }
+
     public List<ToolCallRecordEntity> findTools(String traceId) {
         return toolRepository.findByTraceIdOrderByIdAsc(traceId);
     }
@@ -120,7 +141,8 @@ public class TracePersistenceService {
     // ==================== 内部方法 ====================
 
     private void saveUsageRow(String traceId, String userId, Long conversationId,
-                              Long assistantMessageId, UsageData usage, boolean cancelled) {
+                              Long assistantMessageId, UsageData usage, boolean cancelled,
+                              ContextData context) {
         LlmUsageRecordEntity row = new LlmUsageRecordEntity();
         row.setTraceId(traceId);
         row.setUserId(userId);
@@ -136,8 +158,22 @@ public class TracePersistenceService {
         row.setFallback(usage.fallback());
         row.setCancelled(cancelled || usage.cancelled());
         row.setDurationMs(usage.durationMs());
+        row.setContextJson(contextJson(context));
         row.setCreatedAt(LocalDateTime.now());
         usageRepository.save(row);
+    }
+
+    /** 上下文构成序列化为 JSON 文本（失败返回 null，不影响用量行落库） */
+    private String contextJson(ContextData context) {
+        if (context == null) {
+            return null;
+        }
+        try {
+            return objectMapper.writeValueAsString(context);
+        } catch (Exception e) {
+            log.warn("[Trace] context JSON 序列化失败（不影响落库）: {}", e.getMessage());
+            return null;
+        }
     }
 
     private void saveToolRows(String traceId, String userId, Long conversationId, List<ToolData> tools) {

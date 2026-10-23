@@ -61,6 +61,13 @@ public class LlmUsageRecordEntity {
     @Column(name = "duration_ms", nullable = false)
     private Long durationMs = 0L;
 
+    /**
+     * 本轮上下文四段预算与实际构成（P1-D，JSON 文本）。
+     * MySQL JSON 列，由数据库做合法性校验；NULL = 该回合无 context 事件（老数据/装配失败）。
+     */
+    @Column(name = "context_json", columnDefinition = "json")
+    private String contextJson;
+
     @Column(name = "created_at")
     private LocalDateTime createdAt;
 
@@ -99,6 +106,8 @@ public class LlmUsageRecordEntity {
     public void setCancelled(Boolean cancelled) { this.cancelled = cancelled; }
     public Long getDurationMs() { return durationMs; }
     public void setDurationMs(Long durationMs) { this.durationMs = durationMs; }
+    public String getContextJson() { return contextJson; }
+    public void setContextJson(String contextJson) { this.contextJson = contextJson; }
     public LocalDateTime getCreatedAt() { return createdAt; }
     public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }
 }

@@ -131,6 +131,7 @@ CREATE TABLE IF NOT EXISTS llm_usage_record (
     fallback             TINYINT(1)    NOT NULL DEFAULT 0 COMMENT '是否走了备用模型',
     cancelled            TINYINT(1)    NOT NULL DEFAULT 0 COMMENT '是否被中途取消',
     duration_ms          BIGINT        NOT NULL DEFAULT 0 COMMENT 'agent 侧整轮耗时 ms',
+    context_json         JSON                   DEFAULT NULL COMMENT '本轮上下文四段预算与用量（P1-D，历史回看用）',
     created_at           DATETIME               DEFAULT NULL COMMENT '创建时间',
     PRIMARY KEY (id),
     UNIQUE KEY uk_usage_trace (trace_id),
@@ -318,6 +319,9 @@ CREATE TABLE IF NOT EXISTS user_notification (
 --
 -- 技能类型（Agent-as-Tool）：skill 加列，已存在的库需执行一次（存量行会回填默认值 'tool'）：
 -- ALTER TABLE skill ADD COLUMN type VARCHAR(20) NOT NULL DEFAULT 'tool' COMMENT '技能类型：tool|agent' AFTER tool_names_json;
+--
+-- 上下文构成历史回看（P1-D）：llm_usage_record 加列，已存在的库需执行一次：
+-- ALTER TABLE llm_usage_record ADD COLUMN context_json JSON NULL COMMENT '本轮上下文四段预算与用量（P1-D）' AFTER duration_ms;
 -- ============================================================
 
 -- ============================================================

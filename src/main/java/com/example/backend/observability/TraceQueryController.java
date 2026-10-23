@@ -103,6 +103,8 @@ public class TraceQueryController {
         resp.put("tools", tools);
         resp.put("recalls", recalls);
         resp.put("delegations", delegations);
+        // 上下文构成（P1-D）：老数据/未采集到 context 事件时为 null，前端面板据此隐藏
+        resp.put("context", tracePersistenceService.findContext(traceId));
         return ResponseEntity.ok(resp);
     }
 
