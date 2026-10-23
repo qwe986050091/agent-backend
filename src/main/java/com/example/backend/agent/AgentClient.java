@@ -1,5 +1,6 @@
 package com.example.backend.agent;
 
+import com.example.backend.agent.trace.ContextData;
 import com.example.backend.agent.trace.DelegationData;
 import com.example.backend.agent.trace.RagData;
 import com.example.backend.agent.trace.SafetyData;
@@ -265,10 +266,14 @@ public class AgentClient {
                     ? List.of()
                     : mapper.convertValue(resp.get("delegations"),
                             mapper.getTypeFactory().constructCollectionType(List.class, DelegationData.class));
+            ContextData context = resp.get("context") == null
+                    ? null
+                    : mapper.convertValue(resp.get("context"), ContextData.class);
             return new TraceData(usage, tools == null ? List.of() : tools,
                     recalls == null ? List.of() : recalls,
                     safeties == null ? List.of() : safeties,
-                    delegations == null ? List.of() : delegations);
+                    delegations == null ? List.of() : delegations,
+                    context);
         } catch (Exception e) {
             LoggerFactory.getLogger(AgentClient.class)
                     .warn("[AgentClient] trace 数据解析失败（不影响对话）: {}", e.getMessage());
@@ -506,6 +511,15 @@ public class AgentClient {
             forwardNamedEvent(emitter, "delegation", data);
             return;
         }
+        if ("context".equals(eventName)) {
+            // 上下文构成（P1-D）：透传前端「上下文构成」面板，同时累积供同步/取消路径快照
+            ContextData context = parseEventData(data, ContextData.class);
+            if (context != null) {
+                trace.context = context;
+            }
+            forwardNamedEvent(emitter, "context", data);
+            return;
+        }
         if ("usage".equals(eventName)) {
             UsageData usage = parseEventData(data, UsageData.class);
             if (usage != null) {
@@ -563,6 +577,8 @@ public class AgentClient {
         private final List<SafetyData> safeties = new ArrayList<>();
         private final List<DelegationData> delegations = new ArrayList<>();
         private volatile UsageData usage;
+        /** 上下文构成（P1-D）：回合内仅一条，后到的覆盖先到的 */
+        private volatile ContextData context;
 
         /** agent fallback 重放（trace-reset）：清空已累积的首轮数据 */
         private void reset() {
@@ -571,13 +587,14 @@ public class AgentClient {
             safeties.clear();
             delegations.clear();
             usage = null;
+            context = null;
         }
 
         /** 累积快照（包私有以便单测；P2-12） */
         TraceData snapshot() {
             return new TraceData(usage == null ? UsageData.empty() : usage,
                     List.copyOf(tools), List.copyOf(recalls), List.copyOf(safeties),
-                    List.copyOf(delegations));
+                    List.copyOf(delegations), context);
         }
     }
 

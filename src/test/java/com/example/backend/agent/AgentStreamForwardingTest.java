@@ -165,6 +165,28 @@ class AgentStreamForwardingTest {
     }
 
     @Test
+    void contextEventIsForwardedAndAccumulatedWithoutPollutingAnswer() {
+        RecordingSseEmitter emitter = new RecordingSseEmitter();
+        StringBuilder fullAnswer = new StringBuilder();
+        AgentClient.TraceAccumulator trace = new AgentClient.TraceAccumulator();
+
+        assertThatCode(() -> client.dispatchEvent("context",
+                "{\"strategy\":\"balanced\",\"totalBudgetTokens\":10000,\"totalTokens\":320,"
+                        + "\"overBudget\":false,\"segments\":[{\"key\":\"history\",\"label\":\"历史对话（含本轮）\","
+                        + "\"budgetTokens\":400,\"tokens\":220,\"truncated\":false,\"detail\":\"保留 2 条\"}]}",
+                fullAnswer, new String[]{null}, emitter, trace))
+                .doesNotThrowAnyException();
+
+        assertThat(emitter.flat()).contains("event:context").contains("balanced");
+        // 命名事件不能落入默认 token 通道（否则 JSON 会被拼进回答正文）
+        assertThat(fullAnswer.toString()).isEmpty();
+        TraceData snapshot = trace.snapshot();
+        assertThat(snapshot.context()).isNotNull();
+        assertThat(snapshot.context().segments()).hasSize(1);
+        assertThat(snapshot.context().segments().get(0).key()).isEqualTo("history");
+    }
+
+    @Test
     void usageEventIsForwardedWithCostEnrichment() {
         RecordingSseEmitter emitter = new RecordingSseEmitter();
         AgentClient.TraceAccumulator trace = new AgentClient.TraceAccumulator();
@@ -250,9 +272,13 @@ class AgentStreamForwardingTest {
                     new StringBuilder(), new String[]{null}, emitter, trace);
             client.dispatchEvent("usage", "{\"model\":\"m\",\"totalTokens\":9}",
                     new StringBuilder(), new String[]{null}, emitter, trace);
+            client.dispatchEvent("context",
+                    "{\"strategy\":\"balanced\",\"totalBudgetTokens\":10,\"totalTokens\":1}",
+                    new StringBuilder(), new String[]{null}, emitter, trace);
         }).doesNotThrowAnyException();
         assertThat(trace.snapshot().tools()).hasSize(1);
         assertThat(trace.snapshot().usage().totalTokens()).isEqualTo(9);
+        assertThat(trace.snapshot().context()).isNotNull();
 
         assertThatCode(() -> client.dispatchEvent("trace-reset", "{}",
                 new StringBuilder(), new String[]{null}, emitter, trace))
